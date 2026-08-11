@@ -8,6 +8,22 @@ from typing import Any
 from sailor.schemas import NiftiRecord
 
 
+def mask_degeneracy_reason(record: NiftiRecord) -> str | None:
+    if record.finite is not True:
+        return "NONFINITE"
+    if record.nonzero_voxels is None or record.total_voxels is None:
+        return "UNMEASURED"
+    if record.nonzero_voxels == 0:
+        return "ALL_ZERO"
+    if record.nonzero_voxels == record.total_voxels:
+        return "ALL_ONE"
+    if record.nonzero_voxels <= 10 or (
+        record.nonzero_voxels / record.total_voxels <= 1e-6
+    ):
+        return "NEAR_EMPTY"
+    return None
+
+
 def target_inventory(records: list[NiftiRecord]) -> dict[str, Any]:
     by_classification: dict[str, list[NiftiRecord]] = defaultdict(list)
     for record in records:
@@ -15,10 +31,18 @@ def target_inventory(records: list[NiftiRecord]) -> dict[str, Any]:
 
     primary = by_classification["CL:enhancing_t1wc"]
     unresolved = by_classification["CL:unresolved_component"]
+    excluded_primary = [
+        {"path": record.path, "reason": reason}
+        for record in primary
+        if (reason := mask_degeneracy_reason(record))
+    ]
+    valid_primary = [
+        record for record in primary if mask_degeneracy_reason(record) is None
+    ]
     primary_sessions = sorted(
         {
             (record.subject, record.session)
-            for record in primary
+            for record in valid_primary
             if record.subject and record.session
         }
     )
@@ -27,6 +51,9 @@ def target_inventory(records: list[NiftiRecord]) -> dict[str, Any]:
         "PRIMARY_TARGET_COMPONENT": "enhancing_t1wc",
         "resolved_on_disk_as": sorted({record.path for record in primary}),
         "n_primary_files": len(primary),
+        "n_valid_primary_files": len(valid_primary),
+        "n_excluded_primary_files": len(excluded_primary),
+        "excluded_primary_files": excluded_primary,
         "n_primary_patient_sessions": len(primary_sessions),
         "primary_patient_sessions": [list(item) for item in primary_sessions],
         "unresolved_cl_candidates": [record.path for record in unresolved],
@@ -36,7 +63,9 @@ def target_inventory(records: list[NiftiRecord]) -> dict[str, Any]:
             ),
             "ONCO": len(by_classification["ONCO"]),
         },
-        "cohort_selection_source": "CL:enhancing_t1wc only",
+        "cohort_selection_source": (
+            "non-degenerate CL:enhancing_t1wc only; excluded labels remain reported"
+        ),
     }
 
 

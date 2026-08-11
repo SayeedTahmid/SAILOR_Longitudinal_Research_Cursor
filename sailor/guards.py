@@ -8,6 +8,7 @@ from typing import Any
 
 from sailor.config import Settings
 from sailor.constants import QUARANTINE_NAMES
+from sailor.data.targets import mask_degeneracy_reason
 from sailor.schemas import GuardResult, NiftiRecord
 
 
@@ -21,46 +22,39 @@ def guard_g1(records: list[NiftiRecord]) -> GuardResult:
         if record.classification in {"CL:t2wflair_hyperintensity", "ONCO"}
     ]
 
-    def degeneracy(record: NiftiRecord) -> str | None:
-        if record.finite is not True:
-            return "NONFINITE"
-        if record.nonzero_voxels is None or record.total_voxels is None:
-            return "UNMEASURED"
-        if record.nonzero_voxels == 0:
-            return "ALL_ZERO"
-        if record.nonzero_voxels == record.total_voxels:
-            return "ALL_ONE"
-        if record.nonzero_voxels <= 10 or (
-            record.nonzero_voxels / record.total_voxels <= 1e-6
-        ):
-            return "NEAR_EMPTY"
-        return None
-
     primary_degenerate = [
         {"path": record.path, "reason": reason}
         for record in primary
-        if (reason := degeneracy(record))
+        if (reason := mask_degeneracy_reason(record))
     ]
+    valid_primary_count = len(primary) - len(primary_degenerate)
     inventory_only = [
         {"path": record.path, "classification": record.classification, "reason": reason}
         for record in secondary
-        if (reason := degeneracy(record))
+        if (reason := mask_degeneracy_reason(record))
     ]
     if not primary:
         status = "FAIL"
         summary = "No CL / enhancing_t1wc target files were resolved."
-    elif primary_degenerate:
+    elif valid_primary_count == 0:
         status = "FAIL"
-        summary = f"{len(primary_degenerate)} primary masks are degenerate or unmeasured."
+        summary = "Every resolved CL / enhancing_t1wc mask is unusable."
     else:
         status = "PASS"
-        summary = f"{len(primary)} primary masks passed degeneracy checks."
+        summary = (
+            f"{valid_primary_count} primary masks are valid; "
+            f"{len(primary_degenerate)} are excluded as missing labels."
+        )
     return GuardResult(
         "G1",
         status,
         summary,
         {
             "primary_degenerate": primary_degenerate,
+            "exclusion_policy": (
+                "Degenerate primary masks are missing labels and are excluded from "
+                "cohort windows and scoring; they are never negative examples."
+            ),
             "secondary_inventory_only": inventory_only,
             "near_empty_rule": "<=10 voxels or <=1e-6 foreground fraction",
         },
@@ -194,15 +188,11 @@ def guard_g9(
         )
     excluded: set[tuple[str, str]] = set()
     for item in missing_report.get("sessions", []):
-        text = " ".join(str(value) for value in item.get("missing", [])).lower()
-        missing_fields = item.get("missing_fields", {})
-        keyed_missing = any(
-            ("t1wc" in key.lower() or "t1ce" in key.lower())
-            and str(value).strip().lower()
-            not in {"", "0", "false", "no", "present", "available"}
-            for key, value in missing_fields.items()
-        )
-        if "t1wc" in text or "t1ce" in text or keyed_missing:
+        missing_sequences = {
+            str(value).lower()
+            for value in item.get("missing_sequences", item.get("missing", []))
+        }
+        if missing_sequences & {"t1wc", "t1ce", "t1c"}:
             subject, session = item.get("subject"), item.get("session")
             if subject and session:
                 excluded.add((subject, session))
@@ -212,6 +202,7 @@ def guard_g9(
         if record.classification == "CL:enhancing_t1wc"
         and record.subject
         and record.session
+        and mask_degeneracy_reason(record) is None
     }
     overview_raw_sessions = {
         f"{subject}/{session}"

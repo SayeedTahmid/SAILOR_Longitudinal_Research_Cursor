@@ -150,6 +150,17 @@ def test_missing_tsv_excludes_required_t1wc_session(
     ]
 
 
+def test_missing_matrix_interprets_y_as_missing_and_n_as_present() -> None:
+    report = summarize_missing(
+        [
+            {"subject": "sub-01", "session": "ses-01", "t1wc": "n", "t2w": "y"},
+            {"subject": "sub-01", "session": "ses-02", "t1wc": "y", "t2w": "n"},
+        ]
+    )
+    assert report["sessions"][0]["missing_sequences"] == ["t2w"]
+    assert report["sessions"][1]["missing_sequences"] == ["t1wc"]
+
+
 def test_intensity_guard_reports_measured_range(
     synthetic_project: tuple[object, Path],
 ) -> None:
@@ -208,16 +219,28 @@ def test_end_to_end_audit_writes_locked_manifests_without_touching_legacy(
     assert gap["download_performed"] is False
 
 
-def test_degenerate_primary_mask_triggers_stop_protocol(
+def test_degenerate_primary_masks_are_excluded_and_all_invalid_stops(
     synthetic_project: tuple[object, Path],
 ) -> None:
     settings, legacy = synthetic_project
-    mask_path = next(legacy.rglob("*CL_t1wc_enhancing_mask.nii.gz"))
-    image = nib.load(str(mask_path))
+    mask_paths = sorted(legacy.rglob("*CL_t1wc_enhancing_mask.nii.gz"))
+    image = nib.load(str(mask_paths[0]))
     nib.save(
         nib.Nifti1Image(np.zeros(image.shape, dtype=np.uint8), image.affine),
-        str(mask_path),
+        str(mask_paths[0]),
     )
+
+    records, _ = inventory_nifti(legacy)
+    partial = guard_g1(records)
+    assert partial.status == "PASS"
+    assert len(partial.details["primary_degenerate"]) == 1
+
+    for mask_path in mask_paths[1:]:
+        image = nib.load(str(mask_path))
+        nib.save(
+            nib.Nifti1Image(np.zeros(image.shape, dtype=np.uint8), image.affine),
+            str(mask_path),
+        )
 
     records, _ = inventory_nifti(legacy)
     assert guard_g1(records).status == "FAIL"

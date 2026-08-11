@@ -135,28 +135,46 @@ def summarize_overview(rows: list[dict[str, str]]) -> dict[str, Any]:
 
 def summarize_missing(rows: list[dict[str, str]]) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
+    true_flags = {"y", "yes", "1", "true", "missing", "absent"}
+    false_flags = {"n", "no", "0", "false", "present", "available", ""}
     for row in rows:
         subject = normalize_subject(value_from(row, SUBJECT_COLUMNS))
         session = normalize_session(value_from(row, SESSION_COLUMNS))
-        missing_values = [
-            value
-            for key, value in row.items()
-            if key.lower() not in SUBJECT_COLUMNS + SESSION_COLUMNS and value
-        ]
+        missing_sequences: list[str] = []
+        unrecognized_flags: dict[str, str] = {}
+        missing_fields: dict[str, str] = {}
+        for key, value in row.items():
+            lowered_key = key.lower().strip()
+            normalized_value = value.strip().lower()
+            if lowered_key in SUBJECT_COLUMNS + SESSION_COLUMNS:
+                continue
+            missing_fields[key] = value
+            if lowered_key in {"missing_sequence", "missing_sequences"}:
+                missing_sequences.extend(
+                    token
+                    for token in re.split(r"[,;\s]+", normalized_value)
+                    if token
+                )
+            elif normalized_value in true_flags:
+                missing_sequences.append(lowered_key)
+            elif normalized_value not in false_flags:
+                unrecognized_flags[key] = value
         sessions.append(
             {
                 "subject": subject,
                 "session": session,
-                "missing": missing_values,
-                "missing_fields": {
-                    key: value
-                    for key, value in row.items()
-                    if key.lower() not in SUBJECT_COLUMNS + SESSION_COLUMNS and value
-                },
+                "missing": sorted(set(missing_sequences)),
+                "missing_sequences": sorted(set(missing_sequences)),
+                "missing_fields": missing_fields,
+                "unrecognized_flags": unrecognized_flags,
                 "raw": row,
             }
         )
-    return {"n_rows": len(rows), "sessions": sessions}
+    return {
+        "n_rows": len(rows),
+        "sessions": sessions,
+        "flag_semantics": {"missing": sorted(true_flags), "present": sorted(false_flags)},
+    }
 
 
 def summarize_raw_mni_links(rows: list[dict[str, str]]) -> dict[str, Any]:
