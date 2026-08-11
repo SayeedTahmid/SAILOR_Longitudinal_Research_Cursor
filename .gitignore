@@ -1,0 +1,47 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Local paths and credentials
+configs/local_paths.py
+.env
+*.env
+credentials*.json
+service-account*.json
+
+# Medical data and generated research artefacts
+00_CANONICAL/
+00_QUARANTINE/
+01_DATA_FOUNDATION/
+02_PREPROCESSED_MRI/
+03_TUMOR_MASKS/
+04_LONGITUDINAL_WINDOWS/
+05_TREATMENT_DATA/
+06_QC_REPORTS/
+07_BASELINE_RESULTS/
+08_FEATURES/
+09_MODEL_OUTPUTS/
+10_EXPERIMENTS/
+CHECKPOINTS/
+LOGS/
+RESULTS/
+*.nii
+*.nii.gz
+*.dcm
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.tar
+*.tar.bz2
+
+# Phase-1 synthetic audit output
+synthetic_output/
