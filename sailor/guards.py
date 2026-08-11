@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ def guard_g1(records: list[NiftiRecord]) -> GuardResult:
     ]
 
     def degeneracy(record: NiftiRecord) -> str | None:
+        if record.finite is not True:
+            return "NONFINITE"
         if record.nonzero_voxels is None or record.total_voxels is None:
             return "UNMEASURED"
         if record.nonzero_voxels == 0:
@@ -116,32 +119,61 @@ def guard_g7(delta_report: dict[str, Any]) -> GuardResult:
 def guard_g8(
     link_report: dict[str, Any],
     overview_report: dict[str, Any],
+    records: list[NiftiRecord] | None = None,
 ) -> GuardResult:
     duplicates = link_report.get("duplicates", [])
     unresolved = link_report.get("unresolved_rows", [])
     links = link_report.get("links", [])
-    unmatched: list[list[str]] = []
-    mni_values = [link.get("mni", "") for link in links]
-    for subject, session in overview_report.get("patient_sessions", []):
-        if not any(subject in value and session in value for value in mni_values):
-            unmatched.append([subject, session])
-    failed = not links or bool(duplicates) or bool(unresolved)
+    explicitly_unmatched = link_report.get("explicitly_unmatched", [])
+    mapped_raw = {link["raw"] for link in links}
+    mapped_mni = {link["mni"] for link in links}
+    explicit_raw = {
+        item["raw"] for item in explicitly_unmatched if item.get("raw")
+    }
+    overview_sessions = {
+        f"{subject}/{session}"
+        for subject, session in overview_report.get("patient_sessions", [])
+    }
+    unexplained_overview = sorted(overview_sessions - mapped_raw - explicit_raw)
+
+    observed_mni = {
+        f"{record.subject}/{record.session}"
+        for record in records or []
+        if record.subject and record.session
+    }
+    observed_mni_unmapped = sorted(observed_mni - mapped_mni)
+    mapped_mni_missing_on_disk = sorted(mapped_mni - observed_mni) if records else []
+    failed = (
+        not links
+        or bool(duplicates)
+        or bool(unresolved)
+        or bool(unexplained_overview)
+        or bool(observed_mni_unmapped)
+        or bool(mapped_mni_missing_on_disk)
+    )
     return GuardResult(
         "G8",
         "FAIL" if failed else "PASS",
         (
             "Raw-to-MNI correspondence is absent or not one-to-one."
             if failed
-            else "Raw-to-MNI links are one-to-one for all parsed rows."
+            else (
+                "Raw-to-MNI links are one-to-one; raw sessions marked 'no' are "
+                "retained as explicit unmatched records."
+            )
         ),
         {
             "n_links": len(links),
+            "n_explicitly_unmatched": len(explicitly_unmatched),
+            "explicitly_unmatched": explicitly_unmatched,
             "duplicates": duplicates,
             "unresolved_rows": unresolved,
-            "overview_sessions_not_textually_matched": unmatched,
+            "overview_sessions_unexplained": unexplained_overview,
+            "observed_mni_sessions_unmapped": observed_mni_unmapped,
+            "mapped_mni_sessions_missing_on_disk": mapped_mni_missing_on_disk,
             "note": (
-                "Unmatched overview sessions are reported, not assumed to align by "
-                "ses-XX; descriptor versions can contain different session counts."
+                "A raw-session 'no' value is an official absent MNI correspondence, "
+                "not a join failure and never an assumed ses-XX alignment."
             ),
         },
     )
@@ -151,6 +183,7 @@ def guard_g9(
     missing_report: dict[str, Any],
     overview_report: dict[str, Any],
     records: list[NiftiRecord],
+    link_report: dict[str, Any],
 ) -> GuardResult:
     if missing_report.get("n_rows", 0) == 0:
         return GuardResult(
@@ -173,26 +206,46 @@ def guard_g9(
             subject, session = item.get("subject"), item.get("session")
             if subject and session:
                 excluded.add((subject, session))
-    primary_sessions = {
-        (record.subject, record.session)
+    primary_mni_sessions = {
+        f"{record.subject}/{record.session}"
         for record in records
         if record.classification == "CL:enhancing_t1wc"
         and record.subject
         and record.session
     }
-    overview_sessions = {
-        tuple(item) for item in overview_report.get("patient_sessions", [])
+    overview_raw_sessions = {
+        f"{subject}/{session}"
+        for subject, session in overview_report.get("patient_sessions", [])
     }
-    surviving = sorted((overview_sessions & primary_sessions) - excluded)
+    excluded_raw_sessions = {
+        f"{subject}/{session}" for subject, session in excluded
+    }
+    raw_to_mni = {
+        link["raw"]: link["mni"] for link in link_report.get("links", [])
+    }
+    surviving = sorted(
+        {
+            (raw, mni)
+            for raw, mni in raw_to_mni.items()
+            if raw in overview_raw_sessions - excluded_raw_sessions
+            and mni in primary_mni_sessions
+        }
+    )
+    status = "PASS" if surviving else "FAIL"
     return GuardResult(
         "G9",
-        "PASS",
+        status,
         f"{len(surviving)} patient-sessions survive measured t1wc/CL requirements.",
         {
-            "required_sequence": "t1wc",
-            "excluded_by_missing_tsv": [list(item) for item in sorted(excluded)],
-            "surviving_patient_sessions": [list(item) for item in surviving],
-            "n_surviving_patients": len({subject for subject, _ in surviving}),
+            "required_sequence": "T1c",
+            "excluded_by_missing_tsv_raw": sorted(excluded_raw_sessions),
+            "surviving_raw_mni_pairs": [
+                {"raw": raw, "mni": mni} for raw, mni in surviving
+            ],
+            "n_surviving_patients": len(
+                {raw.split("/", 1)[0] for raw, _ in surviving}
+            ),
+            "join_policy": "raw and MNI sessions joined only through raw-mni-link.tsv",
         },
     )
 
@@ -206,7 +259,25 @@ def guard_g10(records: list[NiftiRecord]) -> GuardResult:
             "No MRI volumes were available for dtype and intensity measurement.",
             {},
         )
-    nonfinite = [record.path for record in mri if record.finite is not True]
+    primary_mri = [
+        record
+        for record in mri
+        if (record.sequence or "").lower().startswith(("t1c", "t1wc", "t1ce"))
+    ]
+    nonfinite_records = [record for record in mri if record.finite is not True]
+    nonfinite = [record.path for record in nonfinite_records]
+    primary_nonfinite = [
+        record.path for record in primary_mri if record.finite is not True
+    ]
+    optional_nonfinite_by_sequence = dict(
+        sorted(
+            Counter(
+                record.sequence or "UNRESOLVED"
+                for record in nonfinite_records
+                if record not in primary_mri
+            ).items()
+        )
+    )
     observed_dtypes = sorted({record.dtype for record in mri})
     outside_descriptor_range = [
         record.path
@@ -215,18 +286,37 @@ def guard_g10(records: list[NiftiRecord]) -> GuardResult:
         and record.maximum is not None
         and (record.minimum < 0 or record.maximum > 255)
     ]
+    if not primary_mri:
+        status = "FAIL"
+        summary = "No T1c-family MRI volumes were resolved for the locked target."
+    elif primary_nonfinite:
+        status = "FAIL"
+        summary = (
+            f"{len(primary_nonfinite)} T1c-family MRI volumes contain NaN or Inf."
+        )
+    else:
+        status = "PASS"
+        summary = (
+            f"{len(primary_mri)} T1c-family volumes are finite; "
+            f"{len(nonfinite) - len(primary_nonfinite)} optional-modality volumes "
+            "remain blocked pending preprocessing."
+        )
     return GuardResult(
         "G10",
-        "FAIL" if nonfinite else "PASS",
-        (
-            "Non-finite MRI intensities were detected."
-            if nonfinite
-            else "MRI dtype and intensity ranges were measured without assuming uint8."
-        ),
+        status,
+        summary,
         {
             "observed_dtypes": observed_dtypes,
             "nonfinite_paths": nonfinite,
+            "n_primary_t1c_volumes": len(primary_mri),
+            "primary_t1c_nonfinite_paths": primary_nonfinite,
+            "blocked_optional_sequences": optional_nonfinite_by_sequence,
             "outside_descriptor_0_255": outside_descriptor_range,
             "normalization_decision": "DEFERRED until measured fold-specific statistics",
+            "binding_policy": (
+                "Optional sequences with non-finite values are ineligible for model "
+                "input until Phase 2 defines, tests, and approves a deterministic "
+                "finite-value policy. No values were repaired in Stage 1."
+            ),
         },
     )

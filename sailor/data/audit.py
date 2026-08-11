@@ -201,8 +201,8 @@ def run_stage1_audit(
         guard_g1(records),
         guard_g5(active, records),
         guard_g7(delta),
-        guard_g8(links, overview),
-        guard_g9(missing, overview, records),
+        guard_g8(links, overview, records),
+        guard_g9(missing, overview, records, links),
         guard_g10(records),
         _dose_guard(dose),
     ]

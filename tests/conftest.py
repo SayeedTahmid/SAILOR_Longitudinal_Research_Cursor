@@ -39,9 +39,9 @@ def synthetic_project(tmp_path: Path) -> tuple[Settings, Path]:
         encoding="utf-8",
     )
     (legacy / "raw-mni-link.tsv").write_text(
-        "raw_session\tmni_session\n"
-        "sub-01/ses-raw01\tsub-01/ses-01\n"
-        "sub-01/ses-raw02\tsub-01/ses-02\n",
+        "subject\traw session\tmni session\n"
+        "sub-01\tses-01\tses-01\n"
+        "sub-01\tses-02\tses-02\n",
         encoding="utf-8",
     )
     (legacy / "src-to-raw.yaml").write_text("{}\n", encoding="utf-8")

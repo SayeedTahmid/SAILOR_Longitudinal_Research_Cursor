@@ -161,19 +161,56 @@ def summarize_missing(rows: list[dict[str, str]]) -> dict[str, Any]:
 
 def summarize_raw_mni_links(rows: list[dict[str, str]]) -> dict[str, Any]:
     if not rows:
-        return {"n_rows": 0, "links": [], "duplicates": [], "unresolved_rows": []}
+        return {
+            "n_rows": 0,
+            "links": [],
+            "explicitly_unmatched": [],
+            "duplicates": [],
+            "unresolved_rows": [],
+        }
     keys = list(rows[0])
+    subject_key = next(
+        (k for k in keys if k.lower().strip() in SUBJECT_COLUMNS),
+        None,
+    )
     raw_key = next((k for k in keys if "raw" in k.lower()), None)
     mni_key = next((k for k in keys if "mni" in k.lower()), None)
     links: list[dict[str, str]] = []
+    explicitly_unmatched: list[dict[str, str | int | None]] = []
     unresolved: list[int] = []
+
+    def qualify(subject: str | None, value: str) -> str:
+        normalized = value.replace("\\", "/")
+        if "/" in normalized or normalized.lower().startswith("sub-"):
+            return normalized
+        session = normalize_session(normalized)
+        return f"{subject}/{session}" if subject and session else normalized
+
+    sentinels = {"", "no", "none", "na", "n/a", "missing", "unknown"}
     for index, row in enumerate(rows, start=2):
+        subject = normalize_subject(row.get(subject_key, "").strip()) if subject_key else None
         raw_value = row.get(raw_key, "").strip() if raw_key else ""
         mni_value = row.get(mni_key, "").strip() if mni_key else ""
-        if raw_value and mni_value:
-            links.append({"raw": raw_value, "mni": mni_value})
-        else:
+        raw_missing = raw_value.lower() in sentinels
+        mni_missing = mni_value.lower() in sentinels
+        if raw_key is None or mni_key is None:
             unresolved.append(index)
+        elif raw_missing or mni_missing:
+            explicitly_unmatched.append(
+                {
+                    "row": index,
+                    "subject": subject,
+                    "raw": None if raw_missing else qualify(subject, raw_value),
+                    "mni": None if mni_missing else qualify(subject, mni_value),
+                }
+            )
+        else:
+            links.append(
+                {
+                    "raw": qualify(subject, raw_value),
+                    "mni": qualify(subject, mni_value),
+                }
+            )
     raw_counts = Counter(link["raw"] for link in links)
     mni_counts = Counter(link["mni"] for link in links)
     duplicates = sorted(
@@ -183,9 +220,10 @@ def summarize_raw_mni_links(rows: list[dict[str, str]]) -> dict[str, Any]:
     return {
         "n_rows": len(rows),
         "links": links,
+        "explicitly_unmatched": explicitly_unmatched,
         "duplicates": duplicates,
         "unresolved_rows": unresolved,
-        "columns": {"raw": raw_key, "mni": mni_key},
+        "columns": {"subject": subject_key, "raw": raw_key, "mni": mni_key},
     }
 
 

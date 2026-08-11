@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import nibabel as nib
@@ -34,6 +35,18 @@ def test_classification_resolves_locked_and_inventory_only_targets() -> None:
     )
     assert classify_nifti("sub-01_ses-01_ONCO_mask.nii.gz") == "ONCO"
     assert classify_nifti("sub-01_ses-01_dosemap.nii.gz") == "DOSE"
+    assert (
+        classify_nifti("sub-01/ses-01/BrainExtractionMask.nii.gz")
+        == "AUXILIARY_MASK"
+    )
+    assert (
+        classify_nifti("sub-01/ses-01/ContrastEnhancedMask-CL.nii.gz")
+        == "CL:enhancing_t1wc"
+    )
+    assert (
+        classify_nifti("sub-01/ses-01/EdemaMask-CL.nii.gz")
+        == "CL:t2wflair_hyperintensity"
+    )
 
 
 def test_metadata_parser_counts_patients_sessions_and_treatment(
@@ -87,6 +100,33 @@ def test_raw_mni_links_stream_from_canonical_derivatives_archive(
     ]
 
 
+def test_raw_mni_links_use_subject_and_preserve_no_sentinel() -> None:
+    rows = [
+        {"subject": "sub-01", "raw session": "ses-01", "mni session": "no"},
+        {"subject": "sub-01", "raw session": "ses-02", "mni session": "ses-01"},
+    ]
+    overview = summarize_overview(
+        [
+            {
+                "participant_id": "sub-01",
+                "session_id": "ses-01",
+                "treatment_status": "CRT",
+            },
+            {
+                "participant_id": "sub-01",
+                "session_id": "ses-02",
+                "treatment_status": "CRT",
+            },
+        ]
+    )
+    report = summarize_raw_mni_links(rows)
+    assert report["links"] == [
+        {"raw": "sub-01/ses-02", "mni": "sub-01/ses-01"}
+    ]
+    assert report["explicitly_unmatched"][0]["raw"] == "sub-01/ses-01"
+    assert guard_g8(report, overview).status == "PASS"
+
+
 def test_missing_tsv_excludes_required_t1wc_session(
     synthetic_project: tuple[object, Path],
 ) -> None:
@@ -102,9 +142,12 @@ def test_missing_tsv_excludes_required_t1wc_session(
         summarize_missing(read_tsv(missing_path)),
         summarize_overview(read_tsv(legacy / "overview.tsv")),
         records,
+        summarize_raw_mni_links(read_tsv(legacy / "raw-mni-link.tsv")),
     )
     assert result.status == "PASS"
-    assert result.details["surviving_patient_sessions"] == [["sub-01", "ses-01"]]
+    assert result.details["surviving_raw_mni_pairs"] == [
+        {"raw": "sub-01/ses-01", "mni": "sub-01/ses-01"}
+    ]
 
 
 def test_intensity_guard_reports_measured_range(
@@ -116,6 +159,26 @@ def test_intensity_guard_reports_measured_range(
     assert result.status == "PASS"
     assert result.details["observed_dtypes"] == ["float32"]
     assert result.details["normalization_decision"].startswith("DEFERRED")
+
+
+def test_intensity_guard_blocks_optional_nonfinite_without_hiding_it(
+    synthetic_project: tuple[object, Path],
+) -> None:
+    _, legacy = synthetic_project
+    records, _ = inventory_nifti(legacy)
+    primary = next(record for record in records if record.sequence == "t1wc")
+    optional_bad = replace(
+        primary,
+        path="sub-01/ses-01/T2-icor.nii.gz",
+        sequence="T2-icor",
+        finite=False,
+    )
+    result = guard_g10([*records, optional_bad])
+    assert result.status == "PASS"
+    assert result.details["blocked_optional_sequences"] == {"T2-icor": 1}
+
+    primary_bad = replace(primary, finite=False)
+    assert guard_g10([primary_bad]).status == "FAIL"
 
 
 def test_end_to_end_audit_writes_locked_manifests_without_touching_legacy(

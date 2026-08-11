@@ -28,8 +28,13 @@ def _tokens(name: str) -> set[str]:
 
 def classify_nifti(path: str) -> str:
     lowered = path.lower()
+    basename = PurePosixPath(path.replace("\\", "/")).name.lower()
     tokens = _tokens(lowered)
     is_cl = "cl" in tokens
+    if basename in {"contrastenhancedmask-cl.nii", "contrastenhancedmask-cl.nii.gz"}:
+        return "CL:enhancing_t1wc"
+    if basename in {"edemamask-cl.nii", "edemamask-cl.nii.gz"}:
+        return "CL:t2wflair_hyperintensity"
     if is_cl and ("t1wc" in tokens or "t1ce" in tokens) and (
         {"enhancing", "enhancement", "tumor", "tumour", "mask"} & tokens
     ):
@@ -42,6 +47,15 @@ def classify_nifti(path: str) -> str:
         return "DOSE"
     if is_cl:
         return "CL:unresolved_component"
+    stem = basename.removesuffix(".nii.gz").removesuffix(".nii")
+    if stem in {
+        "brainextractionmask",
+        "nawmask",
+        "fastsurfer-segmentation",
+        "tumormask",
+        "mask",
+    }:
+        return "AUXILIARY_MASK"
     return "MRI"
 
 
