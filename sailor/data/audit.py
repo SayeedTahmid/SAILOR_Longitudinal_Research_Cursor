@@ -11,6 +11,7 @@ from sailor.constants import CANONICAL_FILES
 from sailor.data.inventory import inventory_nifti, summarize_inventory
 from sailor.data.metadata import (
     discover_exact_dates,
+    read_canonical_tsv,
     read_tsv,
     summarize_missing,
     summarize_overview,
@@ -180,9 +181,13 @@ def run_stage1_audit(
     canonical = verify_canonical_files(active.legacy_root)
     overview = summarize_overview(read_tsv(active.legacy_root / "overview.tsv"))
     missing = summarize_missing(read_tsv(active.legacy_root / "missing.tsv"))
-    links = summarize_raw_mni_links(
-        read_tsv(active.legacy_root / "raw-mni-link.tsv")
+    link_rows, link_source = read_canonical_tsv(
+        active.legacy_root,
+        "raw-mni-link.tsv",
+        archive_candidates=("derivatives.tar.bz2",),
     )
+    links = summarize_raw_mni_links(link_rows)
+    links["source"] = link_source
     records, inventory_process = inventory_nifti(active.legacy_root)
     inventory = summarize_inventory(records)
     target = target_inventory(records)

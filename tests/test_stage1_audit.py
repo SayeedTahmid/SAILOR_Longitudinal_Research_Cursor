@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import tarfile
 from pathlib import Path
 
 import nibabel as nib
@@ -10,6 +12,7 @@ import pytest
 from sailor.data.audit import run_stage1_audit
 from sailor.data.inventory import classify_nifti, inventory_nifti
 from sailor.data.metadata import (
+    read_canonical_tsv,
     read_tsv,
     summarize_missing,
     summarize_overview,
@@ -55,6 +58,33 @@ def test_raw_mni_guard_rejects_duplicate_mapping(
     result = guard_g8(links, overview)
     assert result.status == "FAIL"
     assert result.details["duplicates"]
+
+
+def test_raw_mni_links_stream_from_canonical_derivatives_archive(
+    tmp_path: Path,
+) -> None:
+    payload = (
+        b"raw_session\tmni_session\n"
+        b"sub-01/ses-raw01\tsub-01/ses-01\n"
+    )
+    archive_path = tmp_path / "derivatives.tar.bz2"
+    with tarfile.open(archive_path, "w:bz2") as archive:
+        info = tarfile.TarInfo(
+            "sailor_ebrains_pseud/derivatives/mni2009c-n-s/raw-mni-link.tsv"
+        )
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    rows, source = read_canonical_tsv(
+        tmp_path,
+        "raw-mni-link.tsv",
+        archive_candidates=("derivatives.tar.bz2",),
+    )
+    assert len(rows) == 1
+    assert source is not None and source.endswith("raw-mni-link.tsv")
+    assert summarize_raw_mni_links(rows)["links"] == [
+        {"raw": "sub-01/ses-raw01", "mni": "sub-01/ses-01"}
+    ]
 
 
 def test_missing_tsv_excludes_required_t1wc_session(

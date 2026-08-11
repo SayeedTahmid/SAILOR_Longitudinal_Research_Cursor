@@ -8,7 +8,7 @@ import re
 import tarfile
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 SUBJECT_COLUMNS = ("subject", "subject_id", "participant_id", "patient", "sub")
@@ -27,6 +27,38 @@ def read_tsv(path: Path) -> list[dict[str, str]]:
             {str(key).strip(): (value or "").strip() for key, value in row.items()}
             for row in csv.DictReader(handle, delimiter="\t")
         ]
+
+
+def read_canonical_tsv(
+    legacy_root: Path,
+    filename: str,
+    *,
+    archive_candidates: tuple[str, ...] = (),
+) -> tuple[list[dict[str, str]], str | None]:
+    direct = legacy_root / filename
+    if direct.is_file():
+        return read_tsv(direct), str(direct)
+
+    for archive_name in archive_candidates:
+        archive_path = legacy_root / archive_name
+        if not archive_path.is_file():
+            continue
+        try:
+            with tarfile.open(archive_path, mode="r|*") as archive:
+                for member in archive:
+                    if (
+                        member.isfile()
+                        and PurePosixPath(member.name).name == filename
+                    ):
+                        handle = archive.extractfile(member)
+                        if handle is not None:
+                            return (
+                                _rows_from_bytes(handle.read()),
+                                f"{archive_path}!{member.name}",
+                            )
+        except (OSError, tarfile.TarError):
+            continue
+    return [], None
 
 
 def _normalized_key(record: dict[str, str], candidates: Iterable[str]) -> str | None:
