@@ -6,6 +6,7 @@ __pycache__/
 .coverage
 htmlcov/
 .ipynb_checkpoints/
+.tmp.driveupload/
 
 # Local paths and credentials
 configs/local_paths.py
