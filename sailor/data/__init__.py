@@ -1,5 +1,5 @@
-"""Data-foundation modules."""
+"""Data-foundation package.
 
-from sailor.data.audit import run_stage1_audit
-
-__all__ = ["run_stage1_audit"]
+Submodules are intentionally not imported here so guard and target modules can
+be imported independently without initializing the full audit graph.
+"""

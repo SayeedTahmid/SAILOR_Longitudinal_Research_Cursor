@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -63,3 +65,17 @@ def test_profiler_labels_synthetic_measurement_honestly() -> None:
     assert result.measurements["profiled"] is True
     assert result.measurements["measurement_scope"] == "synthetic_fixture"
     assert result.measurements["compute_mode"] == "CPU-only"
+
+
+def test_guard_module_imports_in_clean_interpreter_without_cycle() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from sailor.guards import guard_g1; assert callable(guard_g1)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
