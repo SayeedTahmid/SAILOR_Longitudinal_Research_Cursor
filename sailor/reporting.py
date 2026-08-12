@@ -51,28 +51,34 @@ def build_completion_record(
     *,
     n_patients: int | None,
     n_sessions: int | None,
+    n_pairs: int | None = None,
+    preprocessing_version: str = "UNSET",
+    fold_scheme: str = "UNSET",
+    model_version: str = "NOT_APPLICABLE",
 ) -> CompletionRecord:
     commit, branch, dirty = git_state()
     failed = [g.guard_id for g in guards if g.status == "FAIL"]
     passed = [g.guard_id for g in guards if g.status == "PASS"]
+    if dirty:
+        failed.append("GIT_DIRTY")
     return CompletionRecord(
         section=section,
         stage=SECTION_STAGE[section],
         status="complete" if not failed else "failed",
         owner="primary_implementation",
         data_version=settings.data_version,
-        model_version="NOT_APPLICABLE_PHASE_1",
-        preprocessing_version="UNSET",
+        model_version=model_version,
+        preprocessing_version=preprocessing_version,
         feature_shape=[],
         primary_target_mask=settings.primary_target_mask,
         primary_target_component=settings.primary_target_component,
         conditioning_rung="NOT_APPLICABLE_PHASE_1",
-        fold_scheme="UNSET",
+        fold_scheme=fold_scheme,
         guards_passed=passed,
         guards_failed=failed,
         n_patients=n_patients,
         n_sessions=n_sessions,
-        n_pairs=None,
+        n_pairs=n_pairs,
         seed=settings.seed,
         gpu="CPU-only",
         git_commit=commit,
@@ -81,6 +87,40 @@ def build_completion_record(
         implementation_id=settings.implementation_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def persist_section_completion(
+    settings: Settings,
+    section: int,
+    guards: list[GuardResult],
+    *,
+    n_patients: int | None,
+    n_sessions: int | None,
+    n_pairs: int | None,
+    preprocessing_version: str,
+    fold_scheme: str,
+) -> CompletionRecord:
+    state_dir = settings.dataset_root / "01_DATA_FOUNDATION" / "state"
+    record = build_completion_record(
+        section,
+        settings,
+        guards,
+        n_patients=n_patients,
+        n_sessions=n_sessions,
+        n_pairs=n_pairs,
+        preprocessing_version=preprocessing_version,
+        fold_scheme=fold_scheme,
+        model_version="NOT_APPLICABLE_PHASE_2",
+    )
+    suffix = "complete" if record.status == "complete" else "failed"
+    target = state_dir / f"section_{section:02d}_{suffix}.json"
+    write_json(target, record.to_dict(), settings)
+    obsolete_suffix = "failed" if suffix == "complete" else "complete"
+    obsolete = state_dir / f"section_{section:02d}_{obsolete_suffix}.json"
+    if obsolete.exists():
+        assert_writable_target(obsolete, settings)
+        obsolete.unlink()
+    return record
 
 
 def persist_completion_records(

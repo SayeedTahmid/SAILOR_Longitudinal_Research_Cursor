@@ -98,3 +98,23 @@ def run_phase1_section(
             "fresh_runtime_safe": True,
         },
     }
+
+
+def run_phase2_section(
+    section_id: int,
+    *,
+    settings: Settings | None = None,
+    execute: bool = False,
+    extraction_approved: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    from sailor.preprocessing.stage2 import run_stage2_section
+
+    active = settings or Settings.from_env()
+    return run_stage2_section(
+        section_id,
+        active,
+        execute=execute,
+        extraction_approved=extraction_approved,
+        force=force,
+    )

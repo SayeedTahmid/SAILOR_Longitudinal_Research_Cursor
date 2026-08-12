@@ -59,6 +59,15 @@ def test_target_lock_cannot_be_changed(tmp_path: Path) -> None:
     with pytest.raises(StopProtocolError):
         settings.validate()
 
+    fold_settings = Settings(
+        dataset_root=tmp_path / "output",
+        legacy_root=tmp_path / "legacy",
+        outer_folds=2,
+        production_lock=False,
+    )
+    with pytest.raises(StopProtocolError):
+        fold_settings.validate()
+
 
 def test_profiler_labels_synthetic_measurement_honestly() -> None:
     result = profile_stage(

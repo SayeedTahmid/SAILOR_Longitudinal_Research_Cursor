@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DATA_VERSION = "v2.0"
-PREPROCESSING_VERSION = "UNSET"
+PREPROCESSING_VERSION = "p2.0"
 IMPLEMENTATION_ID = "cursor_primary"
 PROJECT_NAME = "SAILOR_Longitudinal_Research_Cursor"
 PRODUCTION_DATASET_ROOT = f"/content/drive/MyDrive/{PROJECT_NAME}"
@@ -13,6 +13,13 @@ PRIMARY_TARGET_MASK = "CL"
 PRIMARY_TARGET_COMPONENT = "enhancing_t1wc"
 SECONDARY_TARGET_MASK = "ONCO"
 SENSITIVITY_TARGETS = ("CL:t2wflair_hyperintensity",)
+
+PRIMARY_INPUT_SEQUENCE = "T1c-icor"
+FOLD_SCHEME = "5fold_x3seeds_nested4"
+OUTER_FOLDS = 5
+OUTER_REPEATS = 3
+INNER_FOLDS = 4
+MIN_HISTORY_SCANS = 2
 
 CANONICAL_FILES = (
     "data-descriptor_a866425efff8.pdf",
@@ -82,4 +89,8 @@ SECTION_STAGE = {
     7: 1,
     8: 1,
     9: 1,
+    10: 2,
+    11: 2,
+    12: 2,
+    13: 2,
 }

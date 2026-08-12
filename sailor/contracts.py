@@ -33,3 +33,26 @@ def assert_mask_contract(
     values = np.unique(mask)
     if not np.isin(values, (0, 1)).all():
         raise ValueError(f"{name} is not binary; values include {values[:10].tolist()}.")
+
+
+def assert_aligned_geometry(
+    *,
+    reference_shape: Sequence[int],
+    reference_affine: np.ndarray,
+    candidate_shape: Sequence[int],
+    candidate_affine: np.ndarray,
+    candidate_name: str,
+    affine_tolerance: float = 1e-5,
+) -> None:
+    if tuple(reference_shape) != tuple(candidate_shape):
+        raise ValueError(
+            f"{candidate_name} shape {tuple(candidate_shape)} does not match "
+            f"reference {tuple(reference_shape)}."
+        )
+    if not np.allclose(
+        np.asarray(reference_affine),
+        np.asarray(candidate_affine),
+        rtol=0.0,
+        atol=affine_tolerance,
+    ):
+        raise ValueError(f"{candidate_name} affine does not match the reference grid.")

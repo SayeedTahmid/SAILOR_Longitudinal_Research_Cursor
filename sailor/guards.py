@@ -8,6 +8,7 @@ from typing import Any
 
 from sailor.config import Settings
 from sailor.constants import QUARANTINE_NAMES
+from sailor.data.splits import derive_repeat_seeds
 from sailor.data.targets import mask_degeneracy_reason
 from sailor.schemas import GuardResult, NiftiRecord
 
@@ -87,6 +88,205 @@ def guard_g5(settings: Settings, records: list[NiftiRecord]) -> GuardResult:
                 "Stage-1 provenance only; patient-fold and target-window leakage "
                 "checks become active when fresh CV splits are generated."
             )
+        },
+    )
+
+
+def guard_g5_stage2(
+    settings: Settings,
+    windows_manifest: dict[str, Any],
+    cv_manifest: dict[str, Any],
+    preprocessing_manifest: dict[str, Any],
+) -> GuardResult:
+    failures: list[dict[str, Any]] = []
+    windows = windows_manifest.get("windows", [])
+    patients = {window["subject"] for window in windows}
+    preprocessed_records = preprocessing_manifest.get("records", [])
+    preprocessed_sessions = {
+        f"{record['subject']}/{record['mni_session']}"
+        for record in preprocessed_records
+        if record.get("subject")
+        and record.get("mni_session")
+        and record.get("mri_output")
+        and record.get("mask_output")
+        and record.get("checksums")
+    }
+    unbound_windows: list[str] = []
+    for window in windows:
+        required = {
+            f"{window['subject']}/{session}"
+            for session in [
+                *window.get("history_mni_sessions", []),
+                window["target_mni_session"],
+            ]
+        }
+        if not required <= preprocessed_sessions:
+            unbound_windows.append(window["window_id"])
+    if unbound_windows:
+        failures.append(
+            {
+                "type": "window_without_preprocessed_record",
+                "window_ids": unbound_windows[:50],
+                "count": len(unbound_windows),
+            }
+        )
+    targets_by_patient = {
+        patient: {
+            f"{patient}/{window['target_mni_session']}"
+            for window in windows
+            if window["subject"] == patient
+        }
+        for patient in patients
+    }
+    test_appearances: Counter[tuple[int, str]] = Counter()
+    expected_seeds = derive_repeat_seeds(settings.seed, settings.outer_repeats)
+    if (
+        cv_manifest.get("outer_folds") != settings.outer_folds
+        or cv_manifest.get("outer_repeats") != settings.outer_repeats
+        or cv_manifest.get("inner_folds") != settings.inner_folds
+        or cv_manifest.get("repeat_seeds") != expected_seeds
+        or len(cv_manifest.get("folds", []))
+        != settings.outer_folds * settings.outer_repeats
+    ):
+        failures.append({"type": "cv_topology_mismatch"})
+    seen_outer: dict[int, set[int]] = {
+        repeat: set() for repeat in range(settings.outer_repeats)
+    }
+    for fold in cv_manifest.get("folds", []):
+        if fold.get("repeat") not in seen_outer:
+            failures.append({"type": "unexpected_repeat", "repeat": fold.get("repeat")})
+            continue
+        seen_outer[fold["repeat"]].add(fold["outer_fold"])
+        if fold.get("seed") != expected_seeds[fold["repeat"]]:
+            failures.append(
+                {"type": "repeat_seed_mismatch", "repeat": fold["repeat"]}
+            )
+        if len(fold.get("inner_folds", [])) != settings.inner_folds:
+            failures.append(
+                {
+                    "type": "inner_fold_count",
+                    "repeat": fold["repeat"],
+                    "outer_fold": fold["outer_fold"],
+                }
+            )
+        inner_ids: set[int] = set()
+        validation_appearances: Counter[str] = Counter()
+        train = set(fold["train_patients"])
+        test = set(fold["test_patients"])
+        overlap = sorted(train & test)
+        if overlap:
+            failures.append(
+                {"type": "outer_patient_overlap", "fold": fold["outer_fold"], "patients": overlap}
+            )
+        if train | test != patients:
+            failures.append(
+                {
+                    "type": "outer_patient_coverage",
+                    "fold": fold["outer_fold"],
+                    "missing": sorted(patients - train - test),
+                }
+            )
+        for patient in test:
+            test_appearances[(fold["repeat"], patient)] += 1
+        train_targets = set().union(*(targets_by_patient[item] for item in train)) if train else set()
+        test_targets = set().union(*(targets_by_patient[item] for item in test)) if test else set()
+        if train_targets & test_targets:
+            failures.append(
+                {"type": "target_overlap", "fold": fold["outer_fold"]}
+            )
+        for inner in fold.get("inner_folds", []):
+            inner_ids.add(inner["inner_fold"])
+            inner_train = set(inner["train_patients"])
+            validation = set(inner["validation_patients"])
+            validation_appearances.update(validation)
+            if inner_train & validation or (inner_train | validation) != train:
+                failures.append(
+                    {
+                        "type": "inner_partition_invalid",
+                        "outer_fold": fold["outer_fold"],
+                        "inner_fold": inner["inner_fold"],
+                    }
+                )
+            if (inner_train | validation) & test:
+                failures.append(
+                    {
+                        "type": "outer_test_in_inner_loop",
+                        "outer_fold": fold["outer_fold"],
+                        "inner_fold": inner["inner_fold"],
+                    }
+                )
+        if inner_ids != set(range(settings.inner_folds)):
+            failures.append(
+                {
+                    "type": "inner_fold_ids",
+                    "repeat": fold["repeat"],
+                    "outer_fold": fold["outer_fold"],
+                    "observed": sorted(inner_ids),
+                }
+            )
+        invalid_validation_counts = {
+            patient: validation_appearances[patient]
+            for patient in train
+            if validation_appearances[patient] != 1
+        }
+        if invalid_validation_counts:
+            failures.append(
+                {
+                    "type": "inner_validation_appearance_count",
+                    "repeat": fold["repeat"],
+                    "outer_fold": fold["outer_fold"],
+                    "counts": invalid_validation_counts,
+                }
+            )
+    repeats = cv_manifest.get("outer_repeats", 0)
+    for repeat in range(repeats):
+        for patient in patients:
+            if test_appearances[(repeat, patient)] != 1:
+                failures.append(
+                    {
+                        "type": "test_appearance_count",
+                        "repeat": repeat,
+                        "patient": patient,
+                        "count": test_appearances[(repeat, patient)],
+                    }
+                )
+    for repeat, observed in seen_outer.items():
+        if observed != set(range(settings.outer_folds)):
+            failures.append(
+                {
+                    "type": "outer_fold_ids",
+                    "repeat": repeat,
+                    "observed": sorted(observed),
+                }
+            )
+    contaminated = [
+        record.get("mri_source", "")
+        for record in preprocessing_manifest.get("records", [])
+        if any(
+            name.lower() in record.get("mri_source", "").lower()
+            for name in QUARANTINE_NAMES
+        )
+    ]
+    if contaminated:
+        failures.append({"type": "quarantine_input", "paths": contaminated})
+    if preprocessing_manifest.get("normalization_scope") != "single_volume_brain_mask":
+        failures.append({"type": "normalization_scope_not_leakage_safe"})
+    if settings.fold_scheme != cv_manifest.get("fold_scheme"):
+        failures.append({"type": "fold_scheme_mismatch"})
+    return GuardResult(
+        "G5",
+        "FAIL" if failures else "PASS",
+        (
+            f"Stage 2 leakage checks found {len(failures)} failures."
+            if failures
+            else "Patient, target, inner-loop, normalization, and provenance leakage checks passed."
+        ),
+        {
+            "scope": "Stage-2 full leakage guard",
+            "failures": failures,
+            "n_patients": len(patients),
+            "n_windows": len(windows),
+            "fold_hash": cv_manifest.get("content_hash"),
         },
     )
 

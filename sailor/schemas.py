@@ -42,6 +42,59 @@ class NiftiRecord:
 
 
 @dataclass
+class PreprocessingRecord:
+    subject: str
+    raw_subject: str
+    raw_session: str
+    mni_session: str
+    mri_source: str
+    mask_source: str
+    brain_mask_source: str
+    mri_output: str | None
+    mask_output: str | None
+    shape: tuple[int, ...]
+    spacing: tuple[float, ...]
+    affine_hash: str
+    scaling: dict[str, float] = field(default_factory=dict)
+    checksums: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class WindowRecord:
+    window_id: str
+    subject: str
+    history_raw_sessions: list[str]
+    history_mni_sessions: list[str]
+    target_raw_session: str
+    target_mni_session: str
+    history_delta_days: list[float]
+    target_delta_days: float
+    timing_provenance: str
+    treatment_status: str | None
+    treatment_missing: bool
+    patient_weight: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FoldRecord:
+    repeat: int
+    seed: int
+    outer_fold: int
+    train_patients: list[str]
+    test_patients: list[str]
+    inner_folds: list[dict[str, Any]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class CompletionRecord:
     section: int
     stage: int
