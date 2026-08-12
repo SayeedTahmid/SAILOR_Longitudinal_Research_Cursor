@@ -158,8 +158,15 @@ def build_preprocessing_plan(
                 rtol=1e-6,
                 atol=1e-9,
             )
-            or brains[0].get("minimum") not in {0, 0.0}
-            or brains[0].get("maximum") not in {1, 1.0}
+            or brains[0].get("finite") is not True
+            or float(brains[0].get("minimum", float("nan"))) < 0.0
+            or float(brains[0].get("maximum", float("nan"))) > 1.0
+            or not np.isclose(
+                float(brains[0].get("maximum", float("nan"))),
+                1.0,
+                rtol=0.0,
+                atol=1e-9,
+            )
         ):
             issues.append({"mni": mni_key, "reason": "nonbinary_mask_values"})
             continue
@@ -189,6 +196,8 @@ def build_preprocessing_plan(
                 "mri_dtype": mri[0]["dtype"],
                 "mask_dtype": masks[0]["dtype"],
                 "brain_mask_dtype": brains[0]["dtype"],
+                "brain_mask_threshold": 0.5,
+                "brain_mask_policy": "finite_0_1_support_threshold",
                 "mask_positive_scale": expected_mask_scale,
                 "mask_scale_policy": (
                     "verified_single_positive_value"

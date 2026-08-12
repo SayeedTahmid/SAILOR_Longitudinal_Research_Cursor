@@ -75,6 +75,33 @@ def normalize_verified_binary_mask(
     return normalized
 
 
+def normalize_brain_support_mask(
+    mask: np.ndarray,
+    *,
+    threshold: float = 0.5,
+    name: str,
+) -> np.ndarray:
+    assert_volume_contract(mask, name=name)
+    minimum = float(np.min(mask))
+    maximum = float(np.max(mask))
+    if minimum < 0.0 or maximum > 1.0:
+        raise StopProtocolError(
+            f"{name} has values outside the verified 0–1 range.",
+            "The normalization support could include invalid anatomy.",
+            "Inspect the brain-mask provenance before changing its threshold.",
+        )
+    normalized = (np.asarray(mask) >= threshold).astype(np.uint8)
+    fraction = float(np.count_nonzero(normalized) / normalized.size)
+    if not 0.01 <= fraction <= 0.90:
+        raise StopProtocolError(
+            f"{name} foreground fraction {fraction:.6f} is implausible.",
+            "MRI normalization would use an empty or nearly whole-volume support.",
+            "Inspect the brain mask and registration; do not continue automatically.",
+        )
+    assert_mask_contract(normalized, name=name, expected_shape=mask.shape)
+    return normalized
+
+
 def load_phase1_inputs(settings: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     foundation = settings.dataset_root / "01_DATA_FOUNDATION"
     qc_dir = settings.dataset_root / "06_QC_REPORTS"
@@ -410,7 +437,11 @@ def execute_preprocessing(
                 expected_positive_value=item["mask_positive_scale"],
                 name=f"{key}/CL",
             )
-            assert_mask_contract(brain, name=f"{key}/brain", expected_shape=mri.shape)
+            binary_brain = normalize_brain_support_mask(
+                brain,
+                threshold=item["brain_mask_threshold"],
+                name=f"{key}/brain",
+            )
             assert_aligned_geometry(
                 reference_shape=mri.shape,
                 reference_affine=mri_image.affine,
@@ -425,7 +456,8 @@ def execute_preprocessing(
                 candidate_affine=brain_image.affine,
                 candidate_name=f"{key}/brain",
             )
-            normalized, scaling = robust_scale_volume(mri, brain)
+            normalized, scaling = robust_scale_volume(mri, binary_brain)
+            scaling["brain_mask_threshold"] = item["brain_mask_threshold"]
             build_subject = build_mri / item["subject"] / item["mni_session"]
             build_mask_dir = build_mask / item["subject"] / item["mni_session"]
             build_subject.mkdir(parents=True, exist_ok=True)

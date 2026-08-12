@@ -23,6 +23,7 @@ from sailor.guards import guard_g5_stage2
 from sailor.preprocessing.normalize import robust_scale_volume
 from sailor.preprocessing.pipeline import (
     execute_preprocessing,
+    normalize_brain_support_mask,
     normalize_verified_binary_mask,
     validate_preprocessing_cache,
 )
@@ -176,6 +177,27 @@ def test_verified_mask_conversion_rejects_interpolation() -> None:
             scaled,
             expected_positive_value=0.001,
             name="interpolated_CL",
+        )
+
+
+def test_interpolated_brain_mask_uses_locked_support_threshold() -> None:
+    brain = np.zeros((4, 4, 4), dtype=np.float64)
+    brain[1:4, 1:4, 1:4] = 0.75
+    brain[0, 0, 0] = 0.1
+    converted = normalize_brain_support_mask(
+        brain,
+        threshold=0.5,
+        name="brain",
+    )
+    assert converted[0, 0, 0] == 0
+    assert np.count_nonzero(converted) == 27
+
+    brain[0, 0, 0] = 1.1
+    with pytest.raises(StopProtocolError):
+        normalize_brain_support_mask(
+            brain,
+            threshold=0.5,
+            name="invalid_brain",
         )
 
 
@@ -457,7 +479,8 @@ def test_selective_extraction_writes_only_approved_arrays(tmp_path: Path) -> Non
     mri = np.arange(64, dtype=np.float32).reshape(4, 4, 4)
     mask = np.zeros((4, 4, 4), dtype=np.uint8)
     mask[1:3, 1:3, 1:3] = 1
-    brain = np.ones((4, 4, 4), dtype=np.uint8)
+    brain = np.zeros((4, 4, 4), dtype=np.uint8)
+    brain[1:4, 1:4, 1:4] = 1
     with tarfile.open(legacy / "derivatives.tar.bz2", "w:bz2") as archive:
         for name, array in (
             ("root/sub-01/ses-01/T1c-icor.nii.gz", mri),
@@ -585,11 +608,13 @@ def test_end_to_end_stage2_synthetic_smoke(
             )
             mask = np.zeros((4, 4, 4), dtype=np.uint8)
             mask[1:3, 1:3, 1:3] = 1
+            brain = np.zeros((4, 4, 4), dtype=np.uint8)
+            brain[1:4, 1:4, 1:4] = 1
             archive_items.extend(
                 [
                     (f"{prefix}/T1c-icor.nii.gz", mri),
                     (f"{prefix}/ContrastEnhancedMask-CL.nii.gz", mask),
-                    (f"{prefix}/BrainExtractionMask.nii.gz", np.ones((4, 4, 4), dtype=np.uint8)),
+                    (f"{prefix}/BrainExtractionMask.nii.gz", brain),
                 ]
             )
     manifest = {

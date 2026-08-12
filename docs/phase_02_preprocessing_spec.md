@@ -58,6 +58,12 @@ This does not use other patients, validation patients, or test patients.
 Cohort-wide normalization is forbidden. If later models need a cohort-level
 scaler, it must be fitted separately inside each outer training fold.
 
+Some MNI brain-extraction masks contain interpolation values between 0 and 1.
+They are normalization support masks, not tumour labels. Phase 2 verifies that
+they are finite and bounded by 0–1, converts values `>= 0.5` to brain support,
+and rejects implausibly empty or whole-volume results. This threshold never
+changes the CL tumour mask.
+
 ## Data that remains excluded
 
 - Seven all-zero CL masks remain missing labels.
