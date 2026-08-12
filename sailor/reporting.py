@@ -100,18 +100,62 @@ def persist_completion_records(
             n_sessions=n_sessions,
         )
         suffix = "complete" if record.status == "complete" else "failed"
+        target = state_dir / f"section_{section:02d}_{suffix}.json"
         write_json(
-            state_dir / f"section_{section:02d}_{suffix}.json",
+            target,
             record.to_dict(),
             settings,
         )
+        obsolete_suffix = "failed" if suffix == "complete" else "complete"
+        obsolete = state_dir / f"section_{section:02d}_{obsolete_suffix}.json"
+        if obsolete.exists():
+            assert_writable_target(obsolete, settings)
+            obsolete.unlink()
+
+
+def reconcile_completion_records(settings: Settings) -> list[str]:
+    state_dir = settings.dataset_root / "01_DATA_FOUNDATION" / "state"
+    removed: list[str] = []
+    for section in range(1, 25):
+        candidates = list(state_dir.glob(f"section_{section:02d}_*.json"))
+        if len(candidates) <= 1:
+            continue
+        records = [
+            (path, json.loads(path.read_text(encoding="utf-8")))
+            for path in candidates
+        ]
+        keep_path, _ = max(
+            records,
+            key=lambda item: (
+                item[1].get("timestamp", ""),
+                item[1].get("status") == "complete",
+            ),
+        )
+        for path, _ in records:
+            if path == keep_path:
+                continue
+            assert_writable_target(path, settings)
+            path.unlink()
+            removed.append(str(path))
+    return removed
 
 
 def load_dashboard(settings: Settings) -> dict[str, Any]:
     state_dir = settings.dataset_root / "01_DATA_FOUNDATION" / "state"
-    records: list[dict[str, Any]] = []
+    latest_by_section: dict[int, dict[str, Any]] = {}
     for path in sorted(state_dir.glob("section_??_*.json")):
-        records.append(json.loads(path.read_text(encoding="utf-8")))
+        record = json.loads(path.read_text(encoding="utf-8"))
+        section = int(record["section"])
+        previous = latest_by_section.get(section)
+        if previous is None or (
+            record.get("timestamp", ""),
+            record.get("status") == "complete",
+        ) > (
+            previous.get("timestamp", ""),
+            previous.get("status") == "complete",
+        ):
+            latest_by_section[section] = record
+    records = [latest_by_section[key] for key in sorted(latest_by_section)]
     failures = [
         {"section": record["section"], "guards": record["guards_failed"]}
         for record in records
