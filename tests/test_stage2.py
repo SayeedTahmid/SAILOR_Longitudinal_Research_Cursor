@@ -23,6 +23,7 @@ from sailor.guards import guard_g5_stage2
 from sailor.preprocessing.normalize import robust_scale_volume
 from sailor.preprocessing.pipeline import (
     execute_preprocessing,
+    normalize_verified_binary_mask,
     validate_preprocessing_cache,
 )
 from sailor.preprocessing.policy import assert_plan_ready, build_preprocessing_plan
@@ -131,6 +132,51 @@ def test_phase2_policy_rejects_mismatched_provenance(tmp_path: Path) -> None:
     settings = Settings.for_testing(tmp_path / "output", tmp_path / "legacy")
     with pytest.raises(StopProtocolError):
         build_preprocessing_plan(manifest, qc, settings)
+
+
+def test_phase2_policy_accepts_only_verified_scaled_cl_mask(tmp_path: Path) -> None:
+    manifest, qc = _phase1_selection_fixture()
+    for record in manifest["inventory"]["records"]:
+        record["subject"] = "sub-05"
+        record["session"] = "ses-03"
+        record["path"] = record["path"].replace("sub-01/ses-01", "sub-05/ses-03")
+    mask = next(
+        record
+        for record in manifest["inventory"]["records"]
+        if record["classification"] == "CL:enhancing_t1wc"
+    )
+    mask["maximum"] = 0.0010000000474974513
+    qc["guards"][0]["details"]["surviving_raw_mni_pairs"] = [
+        {"raw": "sub-05/ses-03", "mni": "sub-05/ses-03"}
+    ]
+    settings = Settings.for_testing(tmp_path / "output", tmp_path / "legacy")
+    plan = build_preprocessing_plan(manifest, qc, settings)
+    assert_plan_ready(plan)
+    assert plan["selected"][0]["mask_positive_scale"] == pytest.approx(0.001)
+
+    mask["maximum"] = 0.25
+    assert build_preprocessing_plan(manifest, qc, settings)["issues"][0][
+        "reason"
+    ] == "nonbinary_mask_values"
+
+
+def test_verified_mask_conversion_rejects_interpolation() -> None:
+    scaled = np.zeros((4, 4, 4), dtype=np.float64)
+    scaled[1:3, 1:3, 1:3] = 0.001
+    converted = normalize_verified_binary_mask(
+        scaled,
+        expected_positive_value=0.001,
+        name="scaled_CL",
+    )
+    assert set(np.unique(converted)) == {0, 1}
+
+    scaled[1, 1, 1] = 0.0005
+    with pytest.raises(StopProtocolError):
+        normalize_verified_binary_mask(
+            scaled,
+            expected_positive_value=0.001,
+            name="interpolated_CL",
+        )
 
 
 def test_per_volume_normalization_is_finite_and_background_zero() -> None:
@@ -290,7 +336,7 @@ def test_windows_preserve_different_raw_subject_identifier() -> None:
 def _many_patient_windows() -> dict:
     windows = []
     for patient_index in range(10):
-        subject = f"sub-{patient_index + 1:02d}"
+        subject = f"syn-{patient_index + 1:02d}"
         for window_index in range((patient_index % 3) + 1):
             windows.append(
                 {
@@ -479,7 +525,7 @@ def test_end_to_end_stage2_synthetic_smoke(
     archive_items: list[tuple[str, np.ndarray]] = []
     start = datetime(2020, 1, 1)
     for patient_index in range(10):
-        subject = f"sub-{patient_index + 1:02d}"
+        subject = f"syn-{patient_index + 1:02d}"
         for session_index in range(3):
             session = f"ses-{session_index + 1:02d}"
             prefix = f"root/{subject}/{session}"

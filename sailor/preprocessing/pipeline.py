@@ -50,6 +50,31 @@ def _content_hash(value: Any) -> str:
     ).hexdigest()
 
 
+def normalize_verified_binary_mask(
+    mask: np.ndarray,
+    *,
+    expected_positive_value: float,
+    name: str,
+) -> np.ndarray:
+    assert_volume_contract(mask, name=name)
+    positive = np.asarray(mask)[np.asarray(mask) > 0]
+    values = np.unique(positive)
+    if values.size != 1 or not np.isclose(
+        float(values[0]),
+        expected_positive_value,
+        rtol=1e-6,
+        atol=1e-9,
+    ):
+        raise StopProtocolError(
+            f"{name} does not match its verified binary foreground scale.",
+            "Binarization could change an interpolated or corrupted tumour boundary.",
+            "Stop and inspect the exact positive-value distribution.",
+        )
+    normalized = (np.asarray(mask) > 0).astype(np.uint8)
+    assert_mask_contract(normalized, name=name, expected_shape=mask.shape)
+    return normalized
+
+
 def load_phase1_inputs(settings: Settings) -> tuple[dict[str, Any], dict[str, Any]]:
     foundation = settings.dataset_root / "01_DATA_FOUNDATION"
     qc_dir = settings.dataset_root / "06_QC_REPORTS"
@@ -380,7 +405,11 @@ def execute_preprocessing(
             mask = np.asanyarray(mask_image.dataobj)
             brain = np.asanyarray(brain_image.dataobj)
             assert_volume_contract(mri, name=f"{key}/T1c")
-            assert_mask_contract(mask, name=f"{key}/CL", expected_shape=mri.shape)
+            binary_mask = normalize_verified_binary_mask(
+                mask,
+                expected_positive_value=item["mask_positive_scale"],
+                name=f"{key}/CL",
+            )
             assert_mask_contract(brain, name=f"{key}/brain", expected_shape=mri.shape)
             assert_aligned_geometry(
                 reference_shape=mri.shape,
@@ -406,7 +435,7 @@ def execute_preprocessing(
             final_mri = mri_root / item["subject"] / item["mni_session"] / built_mri.name
             final_mask = mask_root / item["subject"] / item["mni_session"] / built_mask.name
             np.save(built_mri, normalized, allow_pickle=False)
-            np.save(built_mask, mask.astype(np.uint8), allow_pickle=False)
+            np.save(built_mask, binary_mask, allow_pickle=False)
             output_records.append(
                 PreprocessingRecord(
                     subject=item["subject"],
@@ -421,6 +450,7 @@ def execute_preprocessing(
                     shape=tuple(int(value) for value in mri.shape),
                     spacing=tuple(float(value) for value in mri_image.header.get_zooms()[:3]),
                     affine_hash=item["affine_hash"],
+                    mask_original_positive_value=item["mask_positive_scale"],
                     scaling=scaling,
                     checksums={
                         "mri_sha256": _sha256(built_mri),

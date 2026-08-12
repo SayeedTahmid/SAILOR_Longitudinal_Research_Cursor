@@ -38,6 +38,12 @@ derivatives archive. The legacy `sailor_v1` folder remains read-only.
 The MRI is stored as a memory-mappable float32 `.npy` array. The mask is stored
 as a uint8 `.npy` array. Each output receives a checksum and a manifest entry.
 
+Six valid CL masks use a constant foreground value other than 1. Their exact
+positive values were measured from the canonical archive and pre-registered by
+session. Phase 2 accepts only those six exact session/value combinations,
+converts positive foreground to 1, and records the original scale. Any mask
+with multiple positive values or a different scale still triggers STOP.
+
 ## Normalization
 
 Normalization uses only the current MRI volume and its aligned brain mask:

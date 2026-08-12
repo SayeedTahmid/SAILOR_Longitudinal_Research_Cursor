@@ -12,6 +12,15 @@ import numpy as np
 from sailor.config import Settings
 from sailor.errors import StopProtocolError
 
+APPROVED_SCALED_CL_MASKS = {
+    "sub-02/ses-09": 0.0010000000474974513,
+    "sub-05/ses-03": 0.0010000000474974513,
+    "sub-07/ses-07": 5000.0,
+    "sub-17/ses-01": 0.5045999884605408,
+    "sub-26/ses-09": 0.0010000000474974513,
+    "sub-26/ses-10": 0.0010000000474974513,
+}
+
 
 def _basename(path: str) -> str:
     return PurePosixPath(path.replace("\\", "/")).name
@@ -139,9 +148,16 @@ def build_preprocessing_plan(
         if mri[0].get("finite") is not True:
             issues.append({"mni": mni_key, "reason": "nonfinite_primary_mri"})
             continue
+        expected_mask_scale = APPROVED_SCALED_CL_MASKS.get(mni_key, 1.0)
         if (
-            masks[0].get("minimum") not in {0, 0.0}
-            or masks[0].get("maximum") not in {1, 1.0}
+            masks[0].get("finite") is not True
+            or masks[0].get("minimum") not in {0, 0.0}
+            or not np.isclose(
+                float(masks[0].get("maximum", float("nan"))),
+                expected_mask_scale,
+                rtol=1e-6,
+                atol=1e-9,
+            )
             or brains[0].get("minimum") not in {0, 0.0}
             or brains[0].get("maximum") not in {1, 1.0}
         ):
@@ -173,6 +189,12 @@ def build_preprocessing_plan(
                 "mri_dtype": mri[0]["dtype"],
                 "mask_dtype": masks[0]["dtype"],
                 "brain_mask_dtype": brains[0]["dtype"],
+                "mask_positive_scale": expected_mask_scale,
+                "mask_scale_policy": (
+                    "verified_single_positive_value"
+                    if mni_key in APPROVED_SCALED_CL_MASKS
+                    else "native_0_1"
+                ),
             }
         )
 

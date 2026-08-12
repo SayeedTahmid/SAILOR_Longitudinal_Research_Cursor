@@ -55,6 +55,7 @@ class PreprocessingRecord:
     shape: tuple[int, ...]
     spacing: tuple[float, ...]
     affine_hash: str
+    mask_original_positive_value: float = 1.0
     scaling: dict[str, float] = field(default_factory=dict)
     checksums: dict[str, str] = field(default_factory=dict)
 
