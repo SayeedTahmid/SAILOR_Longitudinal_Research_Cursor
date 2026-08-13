@@ -262,6 +262,11 @@ def test_ready_package_build_verify_and_loader(tmp_path: Path) -> None:
     assert result["destination"] == str(destination.resolve())
     assert result["source_vs_package_checksum_comparison"]["mismatches"] == []
     assert "not moved" in result["source_preservation_confirmation"]
+    assert result["promotion_mode"] in {
+        "windows_rename_no_replace",
+        "renameat2_noreplace",
+        "exclusive_lock_drive_rename_fallback",
+    }
     assert verify_ready_package(destination)["status"] == "PASS"
     dataset = ReadyDataset(destination)
     image, mask, record = dataset.load_session("sub-01", "ses-01")

@@ -22,10 +22,10 @@ from sailor.packaging.manifests import write_portable_manifests
 from sailor.packaging.verify import verify_ready_package
 
 
-def _rename_no_replace(source: Path, destination: Path) -> None:
+def _rename_no_replace(source: Path, destination: Path) -> str:
     if os.name == "nt":
         os.rename(source, destination)
-        return
+        return "windows_rename_no_replace"
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:
@@ -57,7 +57,21 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
                 "Atomic no-overwrite protection blocked replacement.",
                 "Inspect the existing destination before any new package attempt.",
             )
+        if error in {
+            errno.EINVAL,
+            errno.ENOSYS,
+            getattr(errno, "EOPNOTSUPP", 95),
+        }:
+            if destination.exists():
+                raise StopProtocolError(
+                    f"Destination exists before Drive-compatible promotion: {destination}",
+                    "The no-overwrite package rule would be violated.",
+                    "Inspect the destination and do not continue automatically.",
+                )
+            os.rename(source, destination)
+            return "exclusive_lock_drive_rename_fallback"
         raise OSError(error, os.strerror(error), str(destination))
+    return "renameat2_noreplace"
 
 
 def _release_lock(fd: int, path: Path) -> None:
@@ -293,7 +307,7 @@ def build_ready_package(
                 "The distribution cannot be marked READY-TO-TRAIN.",
                 "Do not promote the staged directory.",
             )
-        _rename_no_replace(staging, destination_root)
+        promotion_mode = _rename_no_replace(staging, destination_root)
         _release_lock(lock_fd, lock_path)
         return {
             "mode": "EXECUTE",
@@ -311,6 +325,7 @@ def build_ready_package(
                 "mismatches": [],
             },
             "copy_bytes": audit["copy_bytes"],
+            "promotion_mode": promotion_mode,
         }
     except Exception:
         if staging.exists():
