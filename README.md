@@ -26,6 +26,22 @@ Selective extraction requires a separate explicit approval flag:
 python scripts/run_stage2_preprocessing.py --section 10 --execute --approve-extraction
 ```
 
+Build the separate teammate distribution package with a read-only dry run:
+
+```bash
+python scripts/build_sailor_ready.py
+```
+
+After reviewing the copy plan:
+
+```bash
+python scripts/build_sailor_ready.py --execute --approve-copy
+python scripts/verify_sailor_ready.py /content/drive/MyDrive/SAILOR_READY_v2.0
+```
+
+This creates a sibling copy only. It never modifies the authoritative Phase-2
+project root.
+
 The production data root is locked to:
 
 ```text
