@@ -10,6 +10,7 @@ from typing import Any
 
 from sailor.config import Settings
 from sailor.data.splits import generate_nested_cv_manifest
+from sailor.data.timing import validate_timing_cache
 from sailor.data.windows import build_longitudinal_windows
 from sailor.errors import StopProtocolError
 from sailor.guards import guard_g5_stage2
@@ -67,12 +68,17 @@ def _validate_treatment(
     manifest: dict[str, Any],
     preprocessing_path: Path,
     phase1_path: Path,
+    timing_path: Path | None,
 ) -> None:
     if (
         manifest.get("content_hash") != _hash(manifest.get("records", []))
         or manifest.get("preprocessing_manifest_sha256")
         != _file_hash(preprocessing_path)
         or manifest.get("phase1_dataset_manifest_sha256") != _file_hash(phase1_path)
+        or (
+            timing_path is not None
+            and manifest.get("timing_cache_sha256") != _file_hash(timing_path)
+        )
     ):
         raise StopProtocolError(
             "Treatment manifest is stale or has invalid parent hashes.",
@@ -164,6 +170,10 @@ def _paths(settings: Settings) -> dict[str, Path]:
         / "05_TREATMENT_DATA"
         / version
         / "v2_treatment_manifest.json",
+        "timing": settings.dataset_root
+        / "05_TREATMENT_DATA"
+        / version
+        / "v2_canonical_timing_cache.json",
         "cv": settings.dataset_root
         / "04_LONGITUDINAL_WINDOWS"
         / version
@@ -208,10 +218,21 @@ def run_stage2_section(
             preprocessing = _read(paths["preprocessing"])
             validate_preprocessing_cache(settings, preprocessing)
         phase1, _ = load_phase1_inputs(settings)
+        timing_cache = None
+        if not phase1.get("delta_t", {}).get("dates"):
+            if not paths["timing"].is_file():
+                raise StopProtocolError(
+                    "Verified approximate timing cache is missing.",
+                    "Longitudinal windows cannot be ordered without dates or canonical intervals.",
+                    "Persist v2_canonical_timing_cache.json from verified metadata.",
+                )
+            timing_cache = _read(paths["timing"])
+            validate_timing_cache(settings, timing_cache)
         built = build_longitudinal_windows(
             phase1,
             preprocessing["records"],
             min_history_scans=settings.min_history_scans,
+            timing_cache=timing_cache,
         )
         windows = built["windows"]
         windows["preprocessing_manifest_sha256"] = _file_hash(
@@ -230,6 +251,9 @@ def run_stage2_section(
             paths["preprocessing"]
         )
         treatment["phase1_dataset_manifest_sha256"] = _file_hash(phase1_path)
+        treatment["timing_cache_sha256"] = (
+            _file_hash(paths["timing"]) if timing_cache is not None else None
+        )
         treatment["content_hash"] = _hash(treatment["records"])
         _write_section10_manifests(
             settings,
@@ -285,10 +309,14 @@ def run_stage2_section(
     phase1_path = (
         settings.dataset_root / "01_DATA_FOUNDATION" / "v2_dataset_manifest.json"
     )
+    timing_path = paths["timing"] if paths["timing"].is_file() else None
+    if timing_path is not None:
+        validate_timing_cache(settings, _read(timing_path))
     _validate_treatment(
         treatment,
         paths["preprocessing"],
         phase1_path,
+        timing_path,
     )
     _validate_windows(
         windows,

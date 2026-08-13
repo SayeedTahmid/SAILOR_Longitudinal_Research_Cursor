@@ -17,6 +17,10 @@ import pytest
 
 from sailor.config import Settings
 from sailor.data.splits import generate_nested_cv_manifest
+from sailor.data.timing import (
+    persist_verified_timing_cache,
+    validate_timing_cache,
+)
 from sailor.data.windows import build_longitudinal_windows
 from sailor.errors import StopProtocolError
 from sailor.guards import guard_g5_stage2
@@ -366,6 +370,95 @@ def test_windows_preserve_different_raw_subject_identifier() -> None:
     assert built["windows"]["windows"][0]["target_raw_session"].startswith(
         "raw-01/"
     )
+
+
+def test_verified_approximate_timing_cache_builds_windows(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    legacy = tmp_path / "legacy"
+    (output / "01_DATA_FOUNDATION").mkdir(parents=True)
+    legacy.mkdir()
+    settings = Settings.for_testing(output, legacy)
+    inventory = [
+        _inventory_record(
+            f"root/sub-01/{session}/T1c-icor.nii.gz",
+            subject="sub-01",
+            session=session,
+            sequence="T1c-icor",
+        )
+        for session in ("ses-01", "ses-02", "ses-03")
+    ]
+    phase1 = {
+        "inventory": {"records": inventory},
+        "delta_t": {"status": "APPROXIMATE_ONLY", "dates": []},
+        "overview": {"treatment_records": []},
+        "dose": {"files": []},
+    }
+    (output / "01_DATA_FOUNDATION" / "v2_dataset_manifest.json").write_text(
+        json.dumps(phase1),
+        encoding="utf-8",
+    )
+    (output / "01_DATA_FOUNDATION" / "v2_canonical_manifest.json").write_text(
+        json.dumps(
+            {
+                "verification": {
+                    "files": [
+                        {
+                            "name": "derivatives.tar.bz2",
+                            "status": "VERIFIED",
+                            "actual_sha512": "fixture",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    interval_name = (
+        "sailor_ebrains_pseud/derivatives/mni2009c-n-s/"
+        "sub-01/intervals-days.txt"
+    )
+    intervals = {interval_name: b"14\n21\n"}
+    treatments = {
+        (
+            "sailor_ebrains_pseud/derivatives/mni2009c-n-s/"
+            f"sub-01/{session}/treatment.txt"
+        ): label.encode()
+        for session, label in (
+            ("ses-01", "CRT"),
+            ("ses-02", "TMZ"),
+            ("ses-03", "unknown"),
+        )
+    }
+    with tarfile.open(legacy / "raw_needed.tar", "w") as archive:
+        for name, payload in {**intervals, **treatments}.items():
+            info = tarfile.TarInfo(f"./{name}")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    persisted = persist_verified_timing_cache(
+        settings,
+        canonical_intervals=intervals,
+        canonical_treatments=treatments,
+    )
+    validate_timing_cache(settings, persisted["cache"])
+    preprocessed = [
+        {
+            "subject": "sub-01",
+            "raw_subject": "raw-01",
+            "raw_session": session,
+            "mni_session": session,
+        }
+        for session in ("ses-01", "ses-02", "ses-03")
+    ]
+    built = build_longitudinal_windows(
+        phase1,
+        preprocessed,
+        min_history_scans=2,
+        timing_cache=persisted["cache"],
+    )
+    window = built["windows"]["windows"][0]
+    assert window["timing_provenance"] == "approximate_mni_intervals"
+    assert window["history_delta_days"] == [35.0, 21.0]
+    assert window["treatment_missing"] is True
 
 
 def _many_patient_windows() -> dict:

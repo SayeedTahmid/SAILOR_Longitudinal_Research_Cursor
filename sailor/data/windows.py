@@ -19,6 +19,7 @@ def _key(subject: str, session: str) -> str:
 def build_treatment_manifest(
     phase1_manifest: dict[str, Any],
     preprocessed_records: list[dict[str, Any]],
+    timing_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     treatment_lookup = {
         _key(item["subject"], item["session"]): item
@@ -31,16 +32,28 @@ def build_treatment_manifest(
         if item.get("subject") and item.get("path")
     }
     records: list[dict[str, Any]] = []
+    timing_lookup = {
+        _key(item["subject"], item["mni_session"]): item
+        for item in (timing_cache or {}).get("records", [])
+    }
     for item in preprocessed_records:
         raw_subject = item.get("raw_subject", item["subject"])
         raw_key = _key(raw_subject, item["raw_session"])
-        treatment = treatment_lookup.get(raw_key, {})
-        status = treatment.get("status")
-        missing = bool(treatment.get("missing", True)) or status in {
-            None,
-            "MISSING",
-            "UNKNOWN",
-        }
+        if timing_cache is not None:
+            treatment = timing_lookup.get(
+                _key(item["subject"], item["mni_session"]),
+                {},
+            )
+            status = treatment.get("treatment_status")
+            missing = bool(treatment.get("treatment_missing", True))
+        else:
+            treatment = treatment_lookup.get(raw_key, {})
+            status = treatment.get("status")
+            missing = bool(treatment.get("missing", True)) or status in {
+                None,
+                "MISSING",
+                "UNKNOWN",
+            }
         if not missing and status not in {"CRT", "TMZ", "no"}:
             raise StopProtocolError(
                 f"Unrecognized treatment status {status!r} for {raw_key}.",
@@ -57,6 +70,7 @@ def build_treatment_manifest(
                 "missing": missing,
                 "dose_reference": dose_lookup.get(item["subject"]),
                 "dose_missing": item["subject"] not in dose_lookup,
+                "treatment_source": treatment.get("treatment_source"),
             }
         )
     return {
@@ -73,10 +87,13 @@ def build_longitudinal_windows(
     preprocessed_records: list[dict[str, Any]],
     *,
     min_history_scans: int,
+    timing_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     delta = phase1_manifest.get("delta_t", {})
     provenance = (
-        "exact"
+        timing_cache.get("timing_provenance")
+        if timing_cache is not None
+        else "exact"
         if delta.get("status") == "EXACT_SOURCE_FOUND"
         else "approximate"
         if delta.get("status") == "APPROXIMATE_ONLY"
@@ -91,7 +108,15 @@ def build_longitudinal_windows(
         key = _key(subject, session)
         date_lookup[key] = min(parsed, date_lookup.get(key, parsed))
 
-    treatment = build_treatment_manifest(phase1_manifest, preprocessed_records)
+    approximate_lookup = {
+        _key(item["subject"], item["mni_session"]): float(item["approximate_day"])
+        for item in (timing_cache or {}).get("records", [])
+    }
+    treatment = build_treatment_manifest(
+        phase1_manifest,
+        preprocessed_records,
+        timing_cache=timing_cache,
+    )
     treatment_lookup = {
         _key(item.get("raw_subject", item["subject"]), item["raw_session"]): item
         for item in treatment["records"]
@@ -101,7 +126,11 @@ def build_longitudinal_windows(
     for item in preprocessed_records:
         raw_subject = item.get("raw_subject", item["subject"])
         raw_key = _key(raw_subject, item["raw_session"])
-        date = date_lookup.get(raw_key)
+        date = (
+            approximate_lookup.get(_key(item["subject"], item["mni_session"]))
+            if timing_cache is not None
+            else date_lookup.get(raw_key)
+        )
         if date is None:
             missing_dates.append(raw_key)
             continue
@@ -127,7 +156,11 @@ def build_longitudinal_windows(
             history = ordered[:target_index]
             target = ordered[target_index]
             deltas = [
-                (target["_date"] - item["_date"]).total_seconds() / 86400.0
+                (
+                    float(target["_date"] - item["_date"])
+                    if timing_cache is not None
+                    else (target["_date"] - item["_date"]).total_seconds() / 86400.0
+                )
                 for item in history
             ]
             if any(value <= 0 for value in deltas):

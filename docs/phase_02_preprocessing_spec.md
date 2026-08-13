@@ -79,6 +79,15 @@ changes the CL tumour mask.
 Sessions are ordered using verified raw acquisition dates and joined to MNI
 sessions only through `raw-mni-link.tsv`.
 
+For this production dataset, exact acquisition dates are unavailable. The
+checksum-verified derivatives archive contains one `intervals-days.txt` per
+patient and one `treatment.txt` per MNI session. Their copies in
+`raw_needed.tar` were verified byte-for-byte against all 27 canonical interval
+files and all 270 canonical treatment files. Phase 2 therefore uses a
+versioned cache with `approximate_mni_intervals` provenance. It supports
+chronological windows and relative Δt, but never claims exact dates or a
+weeks-since-surgery anchor.
+
 For each patient:
 
 - the third eligible scan can be the first target
