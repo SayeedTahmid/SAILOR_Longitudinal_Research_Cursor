@@ -70,7 +70,7 @@ def _phase1_selection_fixture() -> tuple[dict, dict]:
             "root/sub-01/ses-01/ContrastEnhancedMask-CL.nii.gz",
             classification="CL:enhancing_t1wc",
             dtype="uint8",
-            nonzero=8,
+            nonzero=27,
         ),
         _inventory_record(
             "root/sub-01/ses-01/BrainExtractionMask.nii.gz",
@@ -135,7 +135,7 @@ def test_phase2_policy_rejects_mismatched_provenance(tmp_path: Path) -> None:
         build_preprocessing_plan(manifest, qc, settings)
 
 
-def test_phase2_policy_accepts_only_verified_scaled_cl_mask(tmp_path: Path) -> None:
+def test_phase2_policy_records_measured_cl_mask_scale(tmp_path: Path) -> None:
     manifest, qc = _phase1_selection_fixture()
     for record in manifest["inventory"]["records"]:
         record["subject"] = "sub-05"
@@ -156,20 +156,33 @@ def test_phase2_policy_accepts_only_verified_scaled_cl_mask(tmp_path: Path) -> N
     assert plan["selected"][0]["mask_positive_scale"] == pytest.approx(0.001)
 
     mask["maximum"] = 0.25
-    assert build_preprocessing_plan(manifest, qc, settings)["issues"][0][
-        "reason"
-    ] == "nonbinary_mask_values"
+    rescaled = build_preprocessing_plan(manifest, qc, settings)
+    assert_plan_ready(rescaled)
+    assert rescaled["selected"][0]["mask_positive_scale"] == 0.25
+
+    mask["maximum"] = 0.0
+    assert build_preprocessing_plan(manifest, qc, settings)["issues"][0]["reason"] == (
+        "nonbinary_mask_values"
+    )
 
 
 def test_verified_mask_conversion_rejects_interpolation() -> None:
     scaled = np.zeros((4, 4, 4), dtype=np.float64)
-    scaled[1:3, 1:3, 1:3] = 0.001
+    scaled[1:4, 1:4, 1:4] = 0.001
     converted = normalize_verified_binary_mask(
         scaled,
         expected_positive_value=0.001,
         name="scaled_CL",
     )
     assert set(np.unique(converted)) == {0, 1}
+
+    scaled[0, 0, 0] = 0.00005
+    converted_with_noise = normalize_verified_binary_mask(
+        scaled,
+        expected_positive_value=0.001,
+        name="scaled_CL_with_noise",
+    )
+    assert converted_with_noise[0, 0, 0] == 0
 
     scaled[1, 1, 1] = 0.0005
     with pytest.raises(StopProtocolError):
@@ -478,7 +491,7 @@ def test_selective_extraction_writes_only_approved_arrays(tmp_path: Path) -> Non
     )
     mri = np.arange(64, dtype=np.float32).reshape(4, 4, 4)
     mask = np.zeros((4, 4, 4), dtype=np.uint8)
-    mask[1:3, 1:3, 1:3] = 1
+    mask[1:4, 1:4, 1:4] = 1
     brain = np.zeros((4, 4, 4), dtype=np.uint8)
     brain[1:4, 1:4, 1:4] = 1
     with tarfile.open(legacy / "derivatives.tar.bz2", "w:bz2") as archive:
@@ -566,7 +579,7 @@ def test_end_to_end_stage2_synthetic_smoke(
                         session=session,
                         classification="CL:enhancing_t1wc",
                         dtype="uint8",
-                        nonzero=8,
+                        nonzero=27,
                     ),
                     _inventory_record(
                         f"{prefix}/BrainExtractionMask.nii.gz",
@@ -607,7 +620,7 @@ def test_end_to_end_stage2_synthetic_smoke(
                 + session_index
             )
             mask = np.zeros((4, 4, 4), dtype=np.uint8)
-            mask[1:3, 1:3, 1:3] = 1
+            mask[1:4, 1:4, 1:4] = 1
             brain = np.zeros((4, 4, 4), dtype=np.uint8)
             brain[1:4, 1:4, 1:4] = 1
             archive_items.extend(

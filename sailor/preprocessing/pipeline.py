@@ -57,20 +57,43 @@ def normalize_verified_binary_mask(
     name: str,
 ) -> np.ndarray:
     assert_volume_contract(mask, name=name)
-    positive = np.asarray(mask)[np.asarray(mask) > 0]
-    values = np.unique(positive)
-    if values.size != 1 or not np.isclose(
-        float(values[0]),
+    array = np.asarray(mask, dtype=np.float64)
+    if float(np.min(array)) < 0.0:
+        raise StopProtocolError(
+            f"{name} contains negative values.",
+            "Relative mask normalization is undefined.",
+            "Inspect mask provenance and do not binarize automatically.",
+        )
+    actual_maximum = float(np.max(array))
+    if not np.isclose(
+        actual_maximum,
         expected_positive_value,
         rtol=1e-6,
         atol=1e-9,
     ):
         raise StopProtocolError(
-            f"{name} does not match its verified binary foreground scale.",
-            "Binarization could change an interpolated or corrupted tumour boundary.",
-            "Stop and inspect the exact positive-value distribution.",
+            f"{name} maximum differs from the Phase 1 manifest.",
+            "The source mask or its scaling changed after the dry run.",
+            "Restore the verified archive and regenerate the Phase 1 inventory.",
         )
-    normalized = (np.asarray(mask) > 0).astype(np.uint8)
+    relative = array / actual_maximum
+    ambiguous = (relative >= 0.1) & (relative < 0.9)
+    if np.any(ambiguous):
+        values = np.unique(relative[ambiguous])
+        raise StopProtocolError(
+            f"{name} contains {np.count_nonzero(ambiguous)} ambiguous boundary voxels.",
+            "A 0.5 threshold would make a load-bearing tumour-boundary decision.",
+            f"Inspect normalized values such as {values[:10].tolist()}.",
+        )
+    normalized = (relative >= 0.5).astype(np.uint8)
+    foreground = int(np.count_nonzero(normalized))
+    total = int(normalized.size)
+    if foreground <= 10 or foreground / total <= 1e-6 or foreground == total:
+        raise StopProtocolError(
+            f"{name} is degenerate after relative binarization.",
+            "An invalid target could enter training or scoring.",
+            "Exclude the mask as missing and regenerate the eligible cohort.",
+        )
     assert_mask_contract(normalized, name=name, expected_shape=mask.shape)
     return normalized
 

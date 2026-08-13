@@ -38,11 +38,13 @@ derivatives archive. The legacy `sailor_v1` folder remains read-only.
 The MRI is stored as a memory-mappable float32 `.npy` array. The mask is stored
 as a uint8 `.npy` array. Each output receives a checksum and a manifest entry.
 
-Six valid CL masks use a constant foreground value other than 1. Their exact
-positive values were measured from the canonical archive and pre-registered by
-session. Phase 2 accepts only those six exact session/value combinations,
-converts positive foreground to 1, and records the original scale. Any mask
-with multiple positive values or a different scale still triggers STOP.
+CL masks use different absolute scales, and many contain tiny positive
+resampling noise. Phase 2 verifies each mask against its Phase 1 maximum,
+divides by that maximum, and requires a clear value gap: no voxel may lie in
+the normalized `0.1–0.9` band. Values at least `0.5` become foreground, tiny
+values below `0.1` become background, and G1 degeneracy checks run again. The
+original maximum is recorded. Any ambiguous boundary value still triggers
+STOP.
 
 ## Normalization
 

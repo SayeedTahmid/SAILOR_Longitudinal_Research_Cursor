@@ -12,15 +12,6 @@ import numpy as np
 from sailor.config import Settings
 from sailor.errors import StopProtocolError
 
-APPROVED_SCALED_CL_MASKS = {
-    "sub-02/ses-09": 0.0010000000474974513,
-    "sub-05/ses-03": 0.0010000000474974513,
-    "sub-07/ses-07": 5000.0,
-    "sub-17/ses-01": 0.5045999884605408,
-    "sub-26/ses-09": 0.0010000000474974513,
-    "sub-26/ses-10": 0.0010000000474974513,
-}
-
 
 def _basename(path: str) -> str:
     return PurePosixPath(path.replace("\\", "/")).name
@@ -148,16 +139,12 @@ def build_preprocessing_plan(
         if mri[0].get("finite") is not True:
             issues.append({"mni": mni_key, "reason": "nonfinite_primary_mri"})
             continue
-        expected_mask_scale = APPROVED_SCALED_CL_MASKS.get(mni_key, 1.0)
+        expected_mask_scale = float(masks[0].get("maximum", float("nan")))
         if (
             masks[0].get("finite") is not True
             or masks[0].get("minimum") not in {0, 0.0}
-            or not np.isclose(
-                float(masks[0].get("maximum", float("nan"))),
-                expected_mask_scale,
-                rtol=1e-6,
-                atol=1e-9,
-            )
+            or not np.isfinite(expected_mask_scale)
+            or expected_mask_scale <= 0.0
             or brains[0].get("finite") is not True
             or float(brains[0].get("minimum", float("nan"))) < 0.0
             or float(brains[0].get("maximum", float("nan"))) > 1.0
@@ -199,11 +186,7 @@ def build_preprocessing_plan(
                 "brain_mask_threshold": 0.5,
                 "brain_mask_policy": "finite_0_1_support_threshold",
                 "mask_positive_scale": expected_mask_scale,
-                "mask_scale_policy": (
-                    "verified_single_positive_value"
-                    if mni_key in APPROVED_SCALED_CL_MASKS
-                    else "native_0_1"
-                ),
+                "mask_scale_policy": "relative_gap_checked_at_runtime",
             }
         )
 
