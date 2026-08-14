@@ -49,10 +49,24 @@ def assert_aligned_geometry(
             f"{candidate_name} shape {tuple(candidate_shape)} does not match "
             f"reference {tuple(reference_shape)}."
         )
-    if not np.allclose(
-        np.asarray(reference_affine),
-        np.asarray(candidate_affine),
-        rtol=0.0,
-        atol=affine_tolerance,
-    ):
-        raise ValueError(f"{candidate_name} affine does not match the reference grid.")
+        if not np.allclose(
+            np.asarray(reference_affine),
+            np.asarray(candidate_affine),
+            rtol=0.0,
+            atol=affine_tolerance,
+        ):
+            raise ValueError(f"{candidate_name} affine does not match the reference grid.")
+
+
+def assert_baseline_input_contract(
+    array: np.ndarray,
+    *,
+    name: str,
+    in_channels: int = 3,
+) -> None:
+    if array.ndim != 4 or array.shape[0] != in_channels:
+        raise ValueError(
+            f"{name} must have shape ({in_channels}, D, H, W); received {array.shape}."
+        )
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} contains NaN or Inf.")

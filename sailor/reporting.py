@@ -55,6 +55,7 @@ def build_completion_record(
     preprocessing_version: str = "UNSET",
     fold_scheme: str = "UNSET",
     model_version: str = "NOT_APPLICABLE",
+    conditioning_rung: str = "NOT_APPLICABLE",
 ) -> CompletionRecord:
     commit, branch, dirty = git_state()
     failed = [g.guard_id for g in guards if g.status == "FAIL"]
@@ -72,7 +73,7 @@ def build_completion_record(
         feature_shape=[],
         primary_target_mask=settings.primary_target_mask,
         primary_target_component=settings.primary_target_component,
-        conditioning_rung="NOT_APPLICABLE_PHASE_1",
+        conditioning_rung=conditioning_rung,
         fold_scheme=fold_scheme,
         guards_passed=passed,
         guards_failed=failed,
@@ -99,6 +100,8 @@ def persist_section_completion(
     n_pairs: int | None,
     preprocessing_version: str,
     fold_scheme: str,
+    model_version: str = "NOT_APPLICABLE_PHASE_2",
+    conditioning_rung: str = "NOT_APPLICABLE",
 ) -> CompletionRecord:
     state_dir = settings.dataset_root / "01_DATA_FOUNDATION" / "state"
     record = build_completion_record(
@@ -110,7 +113,8 @@ def persist_section_completion(
         n_pairs=n_pairs,
         preprocessing_version=preprocessing_version,
         fold_scheme=fold_scheme,
-        model_version="NOT_APPLICABLE_PHASE_2",
+        model_version=model_version,
+        conditioning_rung=conditioning_rung,
     )
     suffix = "complete" if record.status == "complete" else "failed"
     target = state_dir / f"section_{section:02d}_{suffix}.json"

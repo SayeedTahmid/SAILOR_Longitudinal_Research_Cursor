@@ -26,6 +26,23 @@ Selective extraction requires a separate explicit approval flag:
 python scripts/run_stage2_preprocessing.py --section 10 --execute --approve-extraction
 ```
 
+Phase 3 evaluates persistence, MRI-only, and MRI+Δt baselines. Preview the plan:
+
+```bash
+python scripts/run_stage3_baselines.py --section 14
+python scripts/run_stage3_baselines.py --section 15
+```
+
+Approved execution writes patient-level results under `07_BASELINE_RESULTS/p3.0/`:
+
+```bash
+python scripts/run_stage3_baselines.py --section 14 --execute
+python scripts/run_stage3_baselines.py --section 15 --execute
+```
+
+C0/C1 require PyTorch in the runtime. Persistence C−1 is CPU-only. Do not write
+into `SAILOR_READY_v2.0`; that folder is a read-only distribution copy.
+
 Build the separate teammate distribution package with a read-only dry run:
 
 ```bash

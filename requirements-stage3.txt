@@ -1,0 +1,4 @@
+# Phase 3 learned baselines. Colab runtimes usually already include PyTorch.
+# Do not add this file to the CPU-only Phase 1/2 bootstrap.
+# If a blank runtime is missing torch, install a pinned build explicitly rather
+# than letting pip resolve "latest".

@@ -1,1 +1,1 @@
-"""Model package reserved for approved later phases."""
+"""Phase-3 shared baseline architecture."""

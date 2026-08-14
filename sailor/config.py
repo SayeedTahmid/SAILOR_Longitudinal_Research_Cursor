@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from sailor.constants import (
+    BASELINE_HISTORY_SCANS,
     DATA_VERSION,
     FOLD_SCHEME,
     IMPLEMENTATION_ID,
     INNER_FOLDS,
     MIN_HISTORY_SCANS,
+    MODEL_VERSION,
     OUTER_FOLDS,
     OUTER_REPEATS,
     PREPROCESSING_VERSION,
@@ -34,6 +36,7 @@ class Settings:
     primary_target_mask: str = PRIMARY_TARGET_MASK
     primary_target_component: str = PRIMARY_TARGET_COMPONENT
     preprocessing_version: str = PREPROCESSING_VERSION
+    model_version: str = MODEL_VERSION
     primary_input_sequence: str = PRIMARY_INPUT_SEQUENCE
     fold_scheme: str = FOLD_SCHEME
     outer_folds: int = OUTER_FOLDS
@@ -92,11 +95,13 @@ class Settings:
             or self.outer_repeats != OUTER_REPEATS
             or self.inner_folds != INNER_FOLDS
             or self.seed != 1337
+            or self.model_version != MODEL_VERSION
+            or BASELINE_HISTORY_SCANS != MIN_HISTORY_SCANS
         ):
             raise StopProtocolError(
-                "Phase 2 input, fold, or history locks were changed.",
+                "Phase 2/3 input, fold, history, or baseline locks were changed.",
                 "Window and evaluation manifests would no longer match the approved plan.",
-                "Restore the Phase 2 locks before generating artefacts.",
+                "Restore the Phase 2/3 locks before generating artefacts.",
             )
         if self.production_lock and self.dataset_root.as_posix() != PRODUCTION_DATASET_ROOT:
             raise StopProtocolError(

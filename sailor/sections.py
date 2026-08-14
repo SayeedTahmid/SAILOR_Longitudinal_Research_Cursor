@@ -118,3 +118,21 @@ def run_phase2_section(
         extraction_approved=extraction_approved,
         force=force,
     )
+
+
+def run_phase3_section(
+    section_id: int,
+    *,
+    settings: Settings | None = None,
+    execute: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    from sailor.experiments.stage3 import run_stage3_section
+
+    active = settings or Settings.from_env()
+    return run_stage3_section(
+        section_id,
+        active,
+        execute=execute,
+        force=force,
+    )

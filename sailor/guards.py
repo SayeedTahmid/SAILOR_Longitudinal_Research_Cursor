@@ -511,3 +511,76 @@ def guard_g10(records: list[NiftiRecord]) -> GuardResult:
             ),
         },
     )
+
+
+def guard_g3(comparisons: dict[str, Any], *, required_models: tuple[str, ...]) -> GuardResult:
+    failures: list[str] = []
+    persistence = comparisons.get("rung_summaries", {}).get("C-1")
+    if not persistence or "ci95" not in persistence:
+        failures.append("persistence_ci_missing")
+    for name in required_models:
+        key = f"{name}_minus_C-1"
+        if key not in comparisons.get("paired", {}):
+            failures.append(f"missing_paired_{key}")
+    if failures:
+        return GuardResult(
+            "G3",
+            "FAIL",
+            "Persistence was not reported as a patient-level bar against every proposed model.",
+            {"failures": failures},
+        )
+    indistinguishable = [
+        name
+        for name in required_models
+        if not comparisons["paired"][f"{name}_minus_C-1"]["beats"]
+    ]
+    if indistinguishable:
+        summary = (
+            "Persistence CIs are reported; "
+            + ", ".join(indistinguishable)
+            + " are statistically indistinguishable from copying the last mask."
+        )
+    else:
+        summary = (
+            "Persistence CIs are reported and every proposed model was compared "
+            "with a paired patient-level test."
+        )
+    return GuardResult(
+        "G3",
+        "PASS",
+        summary,
+        {
+            "persistence": persistence,
+            "indistinguishable_from_persistence": indistinguishable,
+            "rule": "Higher mean Dice is not a result; paired patient CIs are required.",
+        },
+    )
+
+
+def guard_g4(comparisons: dict[str, Any]) -> GuardResult:
+    paired = comparisons.get("paired", {})
+    key = "C1_minus_C1_constant"
+    if key not in paired:
+        return GuardResult(
+            "G4",
+            "FAIL",
+            "The constant-Δt ablation was not run.",
+            {"failures": ["missing_constant_dt_control"]},
+        )
+    result = paired[key]
+    decorative = not result["beats"]
+    summary = (
+        "Δt conditioning is decorative under the retrained constant-Δt control."
+        if decorative
+        else "C1 beats the retrained constant-Δt control outside the paired 95% CI."
+    )
+    return GuardResult(
+        "G4",
+        "PASS",
+        summary,
+        {
+            "paired": result,
+            "decorative": decorative,
+            "rule": "The G4 control is retrained; inference-only zeroing is not the primary ablation.",
+        },
+    )
