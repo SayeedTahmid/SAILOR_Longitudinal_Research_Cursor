@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from sailor.constants import (
     BASELINE_LR_GRID,
     BASELINE_OUTER_EPOCHS,
     BASELINE_PATCH_SIZE,
+    DATA_VERSION,
     MODEL_VERSION,
     PATIENT_BOOTSTRAP_REPLICATES,
     PREPROCESSING_VERSION,
@@ -29,6 +31,11 @@ from sailor.evaluation.patient_stats import (
     illustrative_mde_table,
     minimum_detectable_effect,
     paired_patient_bootstrap,
+)
+from sailor.experiments.checkpointing import (
+    build_identity,
+    checkpoint_root,
+    outer_run_dir,
 )
 from sailor.experiments.train import (
     predict_windows,
@@ -136,13 +143,15 @@ def _score_learned(
     fold: dict[str, Any],
     all_windows: list[dict[str, Any]],
     *,
-    dataset_root: Path,
+    settings: Settings,
     mode: str,
     budget: dict[str, Any],
     seed: int,
     perturbations: tuple[tuple[str, float], ...] = (),
+    force: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     _assert_fold_topology(fold)
+    dataset_root = settings.dataset_root
     train_windows = windows_for_patients(all_windows, fold["train_patients"])
     test_windows = windows_for_patients(all_windows, fold["test_patients"])
     train_subjects = {window["subject"] for window in train_windows}
@@ -153,6 +162,41 @@ def _score_learned(
             "A learned baseline would leak patient identity.",
             "Filter windows by the frozen patient lists.",
         )
+    fold_root = checkpoint_root(
+        settings, mode, int(fold["repeat"]), int(fold["outer_fold"])
+    )
+    complete_path = fold_root / "fold_complete.json"
+    selection_identity = {
+        "mode": mode,
+        "repeat": int(fold["repeat"]),
+        "outer_fold": int(fold["outer_fold"]),
+        "seed": int(seed),
+        "lr_grid": [float(value) for value in budget["lr_grid"]],
+        "inner_epochs": int(budget["inner_epochs"]),
+        "outer_epochs": int(budget["outer_epochs"]),
+        "patch_size": int(budget["patch_size"]),
+        "train_patients": sorted(fold["train_patients"]),
+        "test_patients": sorted(fold["test_patients"]),
+        "inner_folds": fold["inner_folds"],
+        "model_version": MODEL_VERSION,
+        "data_version": DATA_VERSION,
+        "preprocessing_version": PREPROCESSING_VERSION,
+    }
+    selection_hash = hashlib.sha256(
+        json.dumps(selection_identity, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    if complete_path.is_file() and not force:
+        stored = json.loads(complete_path.read_text(encoding="utf-8"))
+        if stored.get("selection_hash") != selection_hash:
+            raise StopProtocolError(
+                f"Completed-fold marker for {mode} repeat {fold['repeat']} "
+                f"outer {fold['outer_fold']} does not match the locked identity.",
+                "Skipping it could mix two experiments.",
+                "Inspect CHECKPOINTS/p3.0 and do not delete valid markers to chase a better score.",
+            )
+        return stored["predictions"]
     constant_days = _median_delta(train_windows) if mode == "C1_constant" else None
     learning_rate = select_learning_rate(
         artefacts,
@@ -163,6 +207,30 @@ def _score_learned(
         seed=seed,
         constant_days=constant_days,
         budget=budget,
+        settings=settings,
+        fold_root=fold_root,
+        identity_base={
+            "repeat": int(fold["repeat"]),
+            "outer_fold": int(fold["outer_fold"]),
+            "fold_scheme": settings.fold_scheme,
+            "test_patients": list(fold["test_patients"]),
+            "selection_hash": selection_hash,
+        },
+    )
+    outer_identity = build_identity(
+        mode=mode,
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=seed,
+        learning_rate=float(learning_rate),
+        epochs=int(budget["outer_epochs"]),
+        patch_size=int(budget["patch_size"]),
+        fold_scheme=settings.fold_scheme,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
     )
     fitted = train_unet(
         artefacts,
@@ -174,6 +242,9 @@ def _score_learned(
         epochs=int(budget["outer_epochs"]),
         learning_rate=learning_rate,
         patch_size=int(budget["patch_size"]),
+        settings=settings,
+        run_dir=outer_run_dir(fold_root),
+        identity=outer_identity,
     )
     if set(fitted["train_patients"]) & set(fold["test_patients"]):
         raise StopProtocolError(
@@ -194,6 +265,8 @@ def _score_learned(
             rung=primary_rung,
         )
     }
+    for row in outputs["primary"]:
+        row["split"] = "OUTER_TEST"
     for label, shift in perturbations:
         outputs[label] = predict_windows(
             fitted["model"],
@@ -206,17 +279,67 @@ def _score_learned(
             delta_perturbation_days=shift,
             rung=label,
         )
+        for row in outputs[label]:
+            row["split"] = "OUTER_TEST"
+    primary = outputs["primary"]
+    write_json(
+        fold_root / "fold_summary.json",
+        {
+            "status": "complete",
+            "mode": mode,
+            "repeat": fold["repeat"],
+            "outer_fold": fold["outer_fold"],
+            "seed": seed,
+            "selected_lr": learning_rate,
+            "selected_lr_source": "INNER_VALIDATION",
+            "best_monitor_score": fitted.get("validation_dice"),
+            "best_monitor_epoch": fitted.get("best_epoch"),
+            "best_metric_source": (
+                "INNER_VALIDATION"
+                if fitted.get("validation_dice") is not None
+                else "TRAINING_MONITOR_ONLY"
+            ),
+            "scientific_checkpoint": "final.pt",
+            "checkpoint_used": "final.pt",
+            "outer_test_metrics": {
+                "dice_mean": float(np.mean([row["dice"] for row in primary])),
+                "iou_mean": float(np.mean([row["iou"] for row in primary])),
+                "precision_mean": float(np.mean([row["precision"] for row in primary])),
+                "recall_mean": float(np.mean([row["recall"] for row in primary])),
+                "n_windows": len(primary),
+                "split": "OUTER_TEST",
+            },
+            "training_seconds": fitted.get("cumulative_seconds"),
+            "gpu": fitted.get("gpu"),
+            "resumed_from_epoch": fitted.get("resumed_from_epoch"),
+            "outer_test_used_for_selection": False,
+            "outer_test_used_for_checkpoint_selection": False,
+            "outer_test_used_for_early_stopping": False,
+        },
+        settings,
+    )
+    write_json(
+        complete_path,
+        {
+            "status": "complete",
+            "selection_hash": selection_hash,
+            "identity": selection_identity,
+            "predictions": outputs,
+        },
+        settings,
+    )
     return outputs
 
 
 def _oof_rows(
     artefacts: dict[str, Any],
     *,
-    dataset_root: Path,
+    settings: Settings,
     mode: str,
     budget: dict[str, Any],
     seed: int,
     perturbations: tuple[tuple[str, float], ...] = (),
+    force: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     windows = artefacts["windows"]["windows"]
     collected: dict[str, list[dict[str, Any]]] = {"primary": []}
@@ -228,7 +351,7 @@ def _oof_rows(
         if mode == "C-1":
             scored = {
                 "primary": _score_persistence(
-                    artefacts, test_windows, dataset_root=dataset_root
+                    artefacts, test_windows, dataset_root=settings.dataset_root
                 )
             }
         else:
@@ -236,11 +359,12 @@ def _oof_rows(
                 artefacts,
                 fold,
                 windows,
-                dataset_root=dataset_root,
+                settings=settings,
                 mode=mode,
                 budget=budget,
                 seed=seed + 17 * int(fold["repeat"]) + int(fold["outer_fold"]),
                 perturbations=perturbations,
+                force=force,
             )
         for key, rows in scored.items():
             for row in rows:
@@ -326,6 +450,80 @@ def _mde_payload(
     return payload
 
 
+def _experiment_summary(
+    settings: Settings,
+    mode: str,
+    comparisons: dict[str, Any],
+    *,
+    n_expected_folds: int,
+) -> dict[str, Any]:
+    safe_mode = mode.replace("C-1", "Cminus1")
+    ckpt = settings.dataset_root / "CHECKPOINTS" / "p3.0" / safe_mode
+    folds = []
+    failures: list[dict[str, Any]] = []
+    if ckpt.exists():
+        for path in sorted(ckpt.glob("repeat*_outer*/fold_summary.json")):
+            folds.append(json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(ckpt.glob("repeat*_outer*/**/failures.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    failures.append(json.loads(line))
+    resume_events = [
+        {
+            "repeat": item.get("repeat"),
+            "outer_fold": item.get("outer_fold"),
+            "resumed_from_epoch": item.get("resumed_from_epoch"),
+        }
+        for item in folds
+        if int(item.get("resumed_from_epoch") or 0) > 0
+    ]
+    gpu_names = sorted(
+        {
+            str(item.get("gpu", {}).get("gpu_name"))
+            for item in folds
+            if item.get("gpu")
+        }
+    )
+    peak_vram = max(
+        (int(item.get("gpu", {}).get("peak_vram_bytes") or 0) for item in folds),
+        default=0,
+    )
+    training_seconds = float(
+        sum(float(item.get("training_seconds") or 0.0) for item in folds)
+    )
+    status = "complete" if len(folds) == n_expected_folds and not failures else (
+        "failed" if failures else "incomplete"
+    )
+    return {
+        "mode": mode,
+        "status": status,
+        "n_completed_folds": len(folds),
+        "n_expected_folds": n_expected_folds,
+        "folds": folds,
+        "patient_level_outer_test": comparisons.get("patient_scores"),
+        "confidence_intervals": comparisons.get("rung_summaries"),
+        "paired": comparisons.get("paired"),
+        "primary_metric": "patient_macro_dice",
+        "metric_roles": {
+            "TRAINING": "monitoring only",
+            "INNER_VALIDATION": "LR selection and monitoring; never scientific reporting",
+            "OUTER_TEST": "final evaluation only; never used for LR, epoch, checkpoint, or early stopping",
+        },
+        "outer_test_used_for_selection": False,
+        "training_seconds_total": training_seconds,
+        "gpu_names": gpu_names,
+        "peak_vram_bytes": peak_vram,
+        "resume_events": resume_events,
+        "n_resume_events": len(resume_events),
+        "failures": failures,
+        "checkpoint_policy": {
+            "latest": "every completed epoch",
+            "best": "inner-validation monitor only",
+            "final": "scientific weights after the locked epoch budget",
+        },
+    }
+
+
 def _write_rung(path: Path, rows: list[dict[str, Any]], settings: Settings) -> None:
     if path.name in FORBIDDEN_RESULT_NAMES:
         raise StopProtocolError(
@@ -396,20 +594,22 @@ def run_stage3_section(
         if force or not cminus1_path.is_file():
             cminus1 = _oof_rows(
                 artefacts,
-                dataset_root=settings.dataset_root,
+                settings=settings,
                 mode="C-1",
                 budget=active_budget,
                 seed=settings.seed,
+                force=force,
             )["primary"]
             _write_rung(cminus1_path, cminus1, settings)
         else:
             cminus1 = json.loads(cminus1_path.read_text(encoding="utf-8"))["rung_rows"]
         c0 = _oof_rows(
             artefacts,
-            dataset_root=settings.dataset_root,
+            settings=settings,
             mode="C0",
             budget=active_budget,
             seed=settings.seed,
+            force=force,
         )["primary"]
         _write_rung(root / "c0_window_metrics.json", c0, settings)
         rows_by_rung = {"C-1": cminus1, "C0": c0}
@@ -419,6 +619,13 @@ def run_stage3_section(
         mde = _mde_payload(n_patients, comparisons["patient_scores"]["C-1"])
         write_json(root / "mde.json", mde, settings)
         write_json(root / "section14_comparisons.json", comparisons, settings)
+        experiment = _experiment_summary(
+            settings,
+            "C0",
+            comparisons,
+            n_expected_folds=len(artefacts["folds"]["folds"]),
+        )
+        write_json(root / "experiment_summary_C0.json", experiment, settings)
         guard = guard_g3(comparisons, required_models=("C0",))
         persist_section_completion(
             settings,
@@ -439,6 +646,7 @@ def run_stage3_section(
             "mde": mde,
             "comparisons": comparisons["rung_summaries"],
             "paired": comparisons["paired"],
+            "experiment_summary": experiment,
             "dashboard": load_dashboard(settings),
         }
 
@@ -459,10 +667,11 @@ def run_stage3_section(
     ]
     c1_scored = _oof_rows(
         artefacts,
-        dataset_root=settings.dataset_root,
+        settings=settings,
         mode="C1",
         budget=active_budget,
         seed=settings.seed,
+        force=force,
         perturbations=(
             ("C1_dt_minus7", -BASELINE_DT_PERTURBATION_DAYS),
             ("C1_dt_plus7", BASELINE_DT_PERTURBATION_DAYS),
@@ -472,10 +681,11 @@ def run_stage3_section(
     _write_rung(root / "c1_window_metrics.json", c1, settings)
     c1_constant = _oof_rows(
         artefacts,
-        dataset_root=settings.dataset_root,
+        settings=settings,
         mode="C1_constant",
         budget=active_budget,
         seed=settings.seed,
+        force=force,
     )["primary"]
     _write_rung(root / "c1_constant_window_metrics.json", c1_constant, settings)
     rows_by_rung = {
@@ -504,6 +714,20 @@ def run_stage3_section(
     mde = _mde_payload(n_patients, comparisons["patient_scores"]["C-1"])
     write_json(root / "mde.json", mde, settings)
     write_json(root / "section15_comparisons.json", comparisons, settings)
+    experiment_c1 = _experiment_summary(
+        settings,
+        "C1",
+        comparisons,
+        n_expected_folds=len(artefacts["folds"]["folds"]),
+    )
+    experiment_g4 = _experiment_summary(
+        settings,
+        "C1_constant",
+        comparisons,
+        n_expected_folds=len(artefacts["folds"]["folds"]),
+    )
+    write_json(root / "experiment_summary_C1.json", experiment_c1, settings)
+    write_json(root / "experiment_summary_C1_constant.json", experiment_g4, settings)
     guards = [
         guard_g3(comparisons, required_models=("C0", "C1")),
         guard_g4(comparisons),
@@ -536,5 +760,7 @@ def run_stage3_section(
         "mde": mde,
         "comparisons": comparisons["rung_summaries"],
         "paired": comparisons["paired"],
+        "experiment_summary_c1": experiment_c1,
+        "experiment_summary_g4": experiment_g4,
         "dashboard": load_dashboard(settings),
     }

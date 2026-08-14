@@ -93,8 +93,45 @@ def window_metrics(
     hd95 = hausdorff_95(prediction, target, spacing=spacing)
     return {
         "dice": dice_coefficient(prediction, target),
+        "iou": iou_coefficient(prediction, target),
+        "precision": precision_score(prediction, target),
+        "recall": recall_score(prediction, target),
         "relative_volume_error": relative_volume_error(prediction, target),
         "hd95_mm": hd95,
         "predicted_voxels": int(np.count_nonzero(prediction)),
         "target_voxels": int(np.count_nonzero(target)),
     }
+
+
+def iou_coefficient(prediction: np.ndarray, target: np.ndarray) -> float:
+    assert_mask_contract(prediction, name="prediction")
+    assert_mask_contract(target, name="target", expected_shape=prediction.shape)
+    pred = np.asarray(prediction) > 0
+    truth = np.asarray(target) > 0
+    intersection = float(np.count_nonzero(pred & truth))
+    union = float(np.count_nonzero(pred | truth))
+    if union == 0.0:
+        return 1.0
+    return intersection / union
+
+
+def precision_score(prediction: np.ndarray, target: np.ndarray) -> float:
+    assert_mask_contract(prediction, name="prediction")
+    assert_mask_contract(target, name="target", expected_shape=prediction.shape)
+    pred = np.asarray(prediction) > 0
+    truth = np.asarray(target) > 0
+    predicted = float(np.count_nonzero(pred))
+    if predicted == 0.0:
+        return 1.0 if np.count_nonzero(truth) == 0 else 0.0
+    return float(np.count_nonzero(pred & truth)) / predicted
+
+
+def recall_score(prediction: np.ndarray, target: np.ndarray) -> float:
+    assert_mask_contract(prediction, name="prediction")
+    assert_mask_contract(target, name="target", expected_shape=prediction.shape)
+    pred = np.asarray(prediction) > 0
+    truth = np.asarray(target) > 0
+    total = float(np.count_nonzero(truth))
+    if total == 0.0:
+        return 1.0 if np.count_nonzero(pred) == 0 else 0.0
+    return float(np.count_nonzero(pred & truth)) / total

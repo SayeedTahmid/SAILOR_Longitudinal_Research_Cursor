@@ -75,3 +75,25 @@ Not approved:
 
 All results are written under `07_BASELINE_RESULTS/p3.0/`. The quarantined
 filename `persistence_baseline.json` is never reused.
+
+## Checkpointing, resume, and monitoring
+
+C0, C1, and G4 (`C1_constant`) are resumable. Checkpoints and logs are written
+under `DATASET_ROOT/CHECKPOINTS/p3.0/<rung>/repeatR_outerF/` after every
+completed epoch. A Colab disconnect must not change epochs, learning rates,
+folds, seeds, data, or the model.
+
+Each run keeps atomic `latest.pt`, `best.pt`, and `final.pt`. Scientific
+evaluation always uses `final.pt` after the locked epoch budget. `best.pt` is
+a monitor only.
+
+On restart, `latest.pt` is loaded if present and its identity is verified
+against the locked experiment (rung, fold, repeat, seed, LR, epoch budget,
+model/data/preprocessing versions). Training continues at the next unfinished
+epoch. A completed fold writes `fold_complete.json` and is skipped. A
+corrupt or mismatched checkpoint **stops**; it is never loaded with a warning.
+
+Training/inner-validation metrics are for monitoring and LR selection.
+Outer-test metrics are stored only after a fold finishes and are never used
+for learning-rate selection, epoch selection, checkpoint selection, or early
+stopping. The primary scientific metric remains patient-macro Dice.

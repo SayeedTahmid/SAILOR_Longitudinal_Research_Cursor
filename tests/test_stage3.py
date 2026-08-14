@@ -317,3 +317,343 @@ def test_section14_runs_tiny_learned_baseline(tmp_path: Path) -> None:
     ).exists() is False
     assert result["mde"]["empirical_persistence_sd"] >= 0
     assert "empirical_mde_dice" in result["mde"]
+    ckpt = settings.dataset_root / "CHECKPOINTS" / "p3.0" / "C0"
+    assert any(ckpt.glob("repeat*_outer*/outer/latest.pt"))
+    assert any(ckpt.glob("repeat*_outer*/outer/final.pt"))
+    assert any(ckpt.glob("repeat*_outer*/outer/metrics.csv"))
+    summary = result["experiment_summary"]
+    assert summary["primary_metric"] == "patient_macro_dice"
+    assert summary["outer_test_used_for_selection"] is False
+    assert summary["status"] in {"complete", "incomplete"}
+    assert (settings.dataset_root / "07_BASELINE_RESULTS" / "p3.0" / "experiment_summary_C0.json").is_file()
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="C0/C1 require torch")
+def test_training_resumes_next_epoch_and_skips_completed_fold(tmp_path: Path) -> None:
+    from sailor.experiments.checkpointing import (
+        build_identity,
+        checkpoint_root,
+        outer_run_dir,
+    )
+    from sailor.experiments.train import train_unet
+    from sailor.baselines.io import load_phase2_artefacts
+
+    settings = write_phase2_fixture(tmp_path)
+    artefacts = load_phase2_artefacts(settings)
+    fold = artefacts["folds"]["folds"][0]
+    train = [
+        window
+        for window in artefacts["windows"]["windows"]
+        if window["subject"] in set(fold["train_patients"])
+    ]
+    identity = build_identity(
+        mode="C0",
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=1337,
+        learning_rate=1e-3,
+        epochs=2,
+        patch_size=8,
+        fold_scheme=FOLD_SCHEME,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
+    )
+    run_dir = outer_run_dir(
+        checkpoint_root(settings, "C0", int(fold["repeat"]), int(fold["outer_fold"]))
+    )
+    first = train_unet(
+        artefacts,
+        train,
+        dataset_root=settings.dataset_root,
+        mode="C0",
+        seed=1337,
+        epochs=2,
+        learning_rate=1e-3,
+        patch_size=8,
+        settings=settings,
+        run_dir=run_dir,
+        identity=identity,
+    )
+    assert first["resumed_from_epoch"] == 0
+    second = train_unet(
+        artefacts,
+        train,
+        dataset_root=settings.dataset_root,
+        mode="C0",
+        seed=1337,
+        epochs=2,
+        learning_rate=1e-3,
+        patch_size=8,
+        settings=settings,
+        run_dir=run_dir,
+        identity=identity,
+    )
+    assert second["resumed_from_epoch"] == 2
+    train_rows = [
+        line
+        for line in (run_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()
+        if ",TRAINING," in line
+    ]
+    assert len(train_rows) == 2
+    assert "OUTER_TEST" not in (run_dir / "metrics.csv").read_text(encoding="utf-8")
+    csv_header = (run_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
+    for column in (
+        "loss",
+        "dice_loss",
+        "bce_loss",
+        "dice",
+        "iou",
+        "precision",
+        "recall",
+        "predicted_volume_mm3",
+        "target_volume_mm3",
+        "learning_rate",
+        "epoch_seconds",
+        "gpu_name",
+    ):
+        assert column in csv_header
+    assert (run_dir / "training_log.jsonl").is_file()
+    assert (run_dir / "training_summary.json").is_file()
+    assert (run_dir / "latest.pt").is_file()
+    assert (run_dir / "best.pt").is_file()
+    assert (run_dir / "final.pt").is_file()
+    assert any((run_dir / "viz").glob("*.pgm"))
+    from sailor.models.unet3d import require_torch
+
+    torch, _ = require_torch()
+    try:
+        payload = torch.load(run_dir / "latest.pt", map_location="cpu", weights_only=False)
+    except TypeError:
+        payload = torch.load(run_dir / "latest.pt", map_location="cpu")
+    for key in (
+        "model_state",
+        "optimizer_state",
+        "epoch",
+        "learning_rate",
+        "best_validation_metric",
+        "best_epoch",
+        "experiment_configuration",
+        "model_version",
+        "data_version",
+        "preprocessing_version",
+        "numpy_rng_state",
+        "torch_rng_state",
+        "seed",
+        "fold",
+        "repeat",
+    ):
+        assert key in payload
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="C0/C1 require torch")
+def test_incompatible_checkpoint_stops(tmp_path: Path) -> None:
+    from sailor.experiments.checkpointing import (
+        build_identity,
+        checkpoint_root,
+        outer_run_dir,
+    )
+    from sailor.experiments.train import train_unet
+    from sailor.baselines.io import load_phase2_artefacts
+
+    settings = write_phase2_fixture(tmp_path)
+    artefacts = load_phase2_artefacts(settings)
+    fold = artefacts["folds"]["folds"][0]
+    train = [
+        window
+        for window in artefacts["windows"]["windows"]
+        if window["subject"] in set(fold["train_patients"])
+    ]
+    run_dir = outer_run_dir(
+        checkpoint_root(settings, "C0", int(fold["repeat"]), int(fold["outer_fold"]))
+    )
+    identity = build_identity(
+        mode="C0",
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=1337,
+        learning_rate=1e-3,
+        epochs=1,
+        patch_size=8,
+        fold_scheme=FOLD_SCHEME,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
+    )
+    train_unet(
+        artefacts,
+        train,
+        dataset_root=settings.dataset_root,
+        mode="C0",
+        seed=1337,
+        epochs=1,
+        learning_rate=1e-3,
+        patch_size=8,
+        settings=settings,
+        run_dir=run_dir,
+        identity=identity,
+    )
+    other = build_identity(
+        mode="C1",
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=1337,
+        learning_rate=1e-3,
+        epochs=1,
+        patch_size=8,
+        fold_scheme=FOLD_SCHEME,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
+    )
+    with pytest.raises(StopProtocolError):
+        train_unet(
+            artefacts,
+            train,
+            dataset_root=settings.dataset_root,
+            mode="C1",
+            seed=1337,
+            epochs=1,
+            learning_rate=1e-3,
+            patch_size=8,
+            settings=settings,
+            run_dir=run_dir,
+            identity=other,
+        )
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="C0/C1 require torch")
+def test_training_resumes_mid_run_next_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sailor.experiments import checkpointing as ckpt_mod
+    from sailor.experiments.checkpointing import (
+        build_identity,
+        checkpoint_root,
+        outer_run_dir,
+    )
+    from sailor.experiments.train import train_unet
+    from sailor.baselines.io import load_phase2_artefacts
+
+    settings = write_phase2_fixture(tmp_path)
+    artefacts = load_phase2_artefacts(settings)
+    fold = artefacts["folds"]["folds"][0]
+    train = [
+        window
+        for window in artefacts["windows"]["windows"]
+        if window["subject"] in set(fold["train_patients"])
+    ]
+    identity = build_identity(
+        mode="C0",
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=1337,
+        learning_rate=1e-3,
+        epochs=2,
+        patch_size=8,
+        fold_scheme=FOLD_SCHEME,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
+    )
+    run_dir = outer_run_dir(
+        checkpoint_root(settings, "C0", int(fold["repeat"]), int(fold["outer_fold"]))
+    )
+    kwargs = dict(
+        artefacts=artefacts,
+        train_windows=train,
+        dataset_root=settings.dataset_root,
+        mode="C0",
+        seed=1337,
+        epochs=2,
+        learning_rate=1e-3,
+        patch_size=8,
+        settings=settings,
+        run_dir=run_dir,
+        identity=identity,
+    )
+    real_save = ckpt_mod.save_epoch_checkpoints
+    calls = {"n": 0}
+
+    def wrapped(**save_kwargs):
+        real_save(**save_kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated colab disconnect")
+
+    monkeypatch.setattr(ckpt_mod, "save_epoch_checkpoints", wrapped)
+    with pytest.raises(RuntimeError, match="simulated colab disconnect"):
+        train_unet(**kwargs)
+    monkeypatch.setattr(ckpt_mod, "save_epoch_checkpoints", real_save)
+    resumed = train_unet(**kwargs)
+    assert resumed["resumed_from_epoch"] == 1
+    train_rows = [
+        line
+        for line in (run_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()
+        if ",TRAINING," in line
+    ]
+    assert len(train_rows) == 2
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="C0/C1 require torch")
+def test_ambiguous_best_checkpoint_without_latest_stops(tmp_path: Path) -> None:
+    from sailor.experiments.checkpointing import (
+        build_identity,
+        checkpoint_root,
+        outer_run_dir,
+    )
+    from sailor.experiments.train import train_unet
+    from sailor.baselines.io import load_phase2_artefacts
+
+    settings = write_phase2_fixture(tmp_path)
+    artefacts = load_phase2_artefacts(settings)
+    fold = artefacts["folds"]["folds"][0]
+    train = [
+        window
+        for window in artefacts["windows"]["windows"]
+        if window["subject"] in set(fold["train_patients"])
+    ]
+    identity = build_identity(
+        mode="C0",
+        split_role="OUTER_TRAINING",
+        repeat=int(fold["repeat"]),
+        outer_fold=int(fold["outer_fold"]),
+        inner_fold=None,
+        seed=1337,
+        learning_rate=1e-3,
+        epochs=2,
+        patch_size=8,
+        fold_scheme=FOLD_SCHEME,
+        train_patients=list(fold["train_patients"]),
+        validation_patients=None,
+        test_patients=list(fold["test_patients"]),
+    )
+    run_dir = outer_run_dir(
+        checkpoint_root(settings, "C0", int(fold["repeat"]), int(fold["outer_fold"]))
+    )
+    kwargs = dict(
+        artefacts=artefacts,
+        train_windows=train,
+        dataset_root=settings.dataset_root,
+        mode="C0",
+        seed=1337,
+        epochs=2,
+        learning_rate=1e-3,
+        patch_size=8,
+        settings=settings,
+        run_dir=run_dir,
+        identity=identity,
+    )
+    train_unet(**kwargs)
+    (run_dir / "latest.pt").unlink()
+    (run_dir / "final.pt").unlink()
+    with pytest.raises(StopProtocolError):
+        train_unet(**kwargs)
